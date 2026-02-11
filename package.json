@@ -1,0 +1,16 @@
+{
+  "name": "n8n-finmind-valuation",
+  "version": "1.0.0",
+  "description": "台股雙軌估值分析系統 — DCF + 股利模型",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "analyze": "node src/index.js"
+  },
+  "keywords": ["taiwan-stock", "dcf", "dividend", "finmind", "valuation"],
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.0"
+  }
+}
