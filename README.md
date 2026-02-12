@@ -1,27 +1,33 @@
 # TaiwanStockVECalculator
 
-台股七模型估值分析系統 — 基於 FinMind API 的多維度量化估值工具
+台股七模型估值分析系統 — 基於 FinMind API 的多維度量化估值工具，支援 HTTP API 微服務 + n8n 自動化工作流 + LLM 智慧分類
 
 ## 功能概述
 
 輸入一個台股代號，系統自動從 FinMind 抓取財報、股價、股利、現金流等數據，透過 **7 個獨立估值模型** 平行計算合理價，再以智慧權重加權合成最終建議。
 
+### 三種使用方式
+
 ```bash
-# 基本用法
+# 1. CLI 單股分析（Terminal 彩色輸出）
 node src/index.js 2330
 
-# 輸出 Markdown 報告
-node src/index.js 2330 --format md --output report.md
+# 2. HTTP API 微服務
+node src/server.js
+curl -X POST http://localhost:3000/api/analyze/2330
 
-# 輸出 JSON（供程式整合）
-node src/index.js 2886 --format json
+# 3. n8n 自動化工作流（每週排程 + 按需查詢 + LLM 智慧分類）
+# 詳見 docs/n8n-setup-guide.md
 ```
 
 ## 專案架構
 
 ```
 src/
-├── index.js                 # 主入口：參數解析 → 抓取數據 → 執行模型 → 輸出報告
+├── index.js                 # CLI 入口：參數解析 → 抓取數據 → 執行模型 → 輸出報告
+├── server.js                # HTTP API 微服務（Express + SQLite）
+├── service.js               # 核心分析服務（單股 + 批次）
+├── db.js                    # SQLite 持久化層（分析歷史、追蹤清單）
 ├── config.js                # 集中設定：產業 WACC、DCF 參數、產業分類對照表
 ├── api/
 │   └── finmind.js           # FinMind API 封裝：並行抓取 8 種數據集
@@ -35,9 +41,19 @@ src/
 │   ├── psr.js               # Model G: PSR 股價營收比
 │   ├── momentum.js          # 營收動能分析（輔助調整 DCF 成長率）
 │   └── utils.js             # 共用工具：TTM EPS、年度彙整、統計函數
+├── llm/
+│   ├── guardrails.js        # LLM 輸出驗證層（權重邊界、分類類型、模型可用性）
+│   └── resynthesize.js      # LLM 權重重新合成引擎
 └── report/
     ├── synthesizer.js       # 七模型綜合引擎：分類、加權、建議、風險
     └── formatters.js        # 輸出格式化：Terminal / Markdown / JSON
+
+n8n_workflows/
+├── weekly-valuation.json    # 每週排程：批次分析 + LLM 分類 + Telegram/Email 通知
+└── on-demand-analysis.json  # 按需查詢：Webhook 觸發 + LLM 分類 + 即時回傳
+
+docs/
+└── n8n-setup-guide.md       # n8n 工作流匯入與設定指南
 ```
 
 ## 七大估值模型
@@ -148,11 +164,13 @@ RPS = 年度營收 / 流通股數
 
 **適用**：虧損中的成長股、營收快速擴張但尚未獲利的公司
 
-## 智慧加權引擎（Synthesizer）
+## 智慧加權引擎
 
-### 股票分類系統
+### 雙軌分類系統
 
-系統根據產業特性和財務數據自動將股票分為 7 類，每類有不同的模型權重配置：
+系統支援兩種分類模式，確保可靠性：
+
+**確定性分類（Synthesizer）**：根據產業特性和財務數據自動分為 7 類，固定權重配置：
 
 | 股票類型 | DCF | PER | PBR | 股利 | CapEx | EV/EBITDA | PSR |
 |:---------|----:|----:|----:|-----:|------:|----------:|----:|
@@ -163,6 +181,13 @@ RPS = 年度營收 / 流通股數
 | 週期性 | 15% | 20% | 15% | 15% | 10% | 15% | 10% |
 | 虧損成長股 | 0% | 0% | 10% | 0% | 10% | 20% | 60% |
 | 混合型 | 20% | 20% | 10% | 15% | 10% | 15% | 10% |
+
+**LLM 智慧分類（Phase 2）**：透過 n8n 工作流呼叫 GPT-4o，根據七模型數據和歷史趨勢動態判斷分類與權重：
+
+- 分析每股的基本面特徵（成長率、殖利率、PE、產業等）
+- 動態分配 7 個模型權重（每個 weight 上限 50%，加總 = 100%）
+- 提供繁體中文分析敘述和信心度評估
+- Guardrails 雙層驗證確保輸出合規，失敗時安全回退至確定性結果
 
 ### 信心度動態調整
 
@@ -185,6 +210,90 @@ RPS = 年度營收 / 流通股數
 | HOLD（中性） | -10% < upside < 10% |
 | SELL（一般） | upside ≤ -10% |
 | SELL（強烈） | upside ≤ -20% |
+
+## HTTP API 微服務
+
+估值系統提供 RESTful API，供 n8n 工作流或其他系統整合使用。
+
+```bash
+# 啟動
+node src/server.js
+# → Valuation API running on port 3000
+```
+
+### API 端點
+
+| 方法 | 路徑 | 說明 |
+|:-----|:-----|:-----|
+| GET | `/api/health` | 健康檢查 |
+| POST | `/api/analyze/:ticker` | 單股七模型分析 |
+| POST | `/api/analyze/batch` | 批次分析（body: `{"tickers": [...]}`) |
+| GET | `/api/history/:ticker` | 歷史分析紀錄 |
+| GET | `/api/compare/:ticker` | 最近兩次分析差異比較 |
+| POST | `/api/resynthesize/:ticker` | LLM 權重重新合成 |
+| POST | `/api/resynthesize/batch` | 批次 LLM 重新合成 |
+| GET | `/api/portfolio` | 取得追蹤清單 |
+| POST | `/api/portfolio` | 新增追蹤（body: `{"tickers": [...]}`) |
+| DELETE | `/api/portfolio/:ticker` | 移除追蹤 |
+
+### 使用範例
+
+```bash
+# 分析台積電
+curl -X POST http://localhost:3000/api/analyze/2330
+
+# 批次分析
+curl -X POST http://localhost:3000/api/analyze/batch \
+  -H "Content-Type: application/json" \
+  -d '{"tickers": ["2330", "2884", "2317"]}'
+
+# 歷史差異比較
+curl http://localhost:3000/api/compare/2330
+
+# LLM 權重重新合成
+curl -X POST http://localhost:3000/api/resynthesize/2330 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "llmClassification": {
+      "type": "成長股",
+      "weights": {"dcf":0.40,"per":0.25,"pbr":0,"div":0.05,"capex":0.15,"evEbitda":0.10,"psr":0.05},
+      "confidence": "HIGH",
+      "narrative": "台積電高成長特性"
+    }
+  }'
+
+# 管理追蹤清單
+curl -X POST http://localhost:3000/api/portfolio \
+  -H "Content-Type: application/json" \
+  -d '{"tickers": ["2330", "2884"]}'
+```
+
+## n8n 自動化工作流
+
+系統提供兩個 n8n 工作流，實現完整的自動化估值分析管道：
+
+### 每週估值報告 (`weekly-valuation.json`)
+
+```
+Cron 每週日 09:00
+  → 取得追蹤清單 → 批次七模型分析
+  → GPT-4o 智慧分類 + 權重分配
+  → Guardrails 驗證 → LLM 權重重新加權
+  → Telegram 摘要 + Email 詳細報告
+```
+
+### 按需查詢 (`on-demand-analysis.json`)
+
+```
+POST /webhook/analyze {"ticker": "2330"}
+  → 七模型分析 → 歷史差異比較
+  → GPT-4o 分類 → Guardrails 驗證
+  → LLM 重新加權 → 即時回傳結果
+```
+
+### 設定指南
+
+完整的 n8n 匯入步驟、環境變數設定、通知設定請參閱 **[docs/n8n-setup-guide.md](docs/n8n-setup-guide.md)**。
 
 ## 數據來源
 
@@ -216,15 +325,18 @@ cd TaiwanStockVECalculator
 npm install
 ```
 
-### 設定 API Token
+### 設定環境變數
 
 ```bash
-echo "FINMIND_API_TOKEN=你的token" > .env
+cp .env.example .env
+# 編輯 .env，填入 FINMIND_API_TOKEN
 ```
 
 ### 執行
 
 ```bash
+# === CLI 模式 ===
+
 # 分析單一股票（Terminal 彩色輸出）
 node src/index.js 2330
 
@@ -234,13 +346,26 @@ node src/index.js 2330 --format md --output output/2330.md
 # 輸出 JSON
 node src/index.js 2886 --format json
 
-# QA 測試：0050 全部成份股
+# === HTTP API 模式 ===
+
+# 啟動微服務
+node src/server.js
+
+# 單股分析
+curl -X POST http://localhost:3000/api/analyze/2330
+
+# === n8n 自動化模式 ===
+# 詳見 docs/n8n-setup-guide.md
+
+# === QA 測試 ===
+
+# 0050 全部成份股
 node src/qa-test.js
 
-# QA 測試：僅金融股
+# 僅金融股
 node src/qa-test.js --sector 金融
 
-# QA 測試：前 5 檔
+# 前 5 檔
 node src/qa-test.js --batch-size 5
 
 # 批次分析指定股票
@@ -272,12 +397,16 @@ node src/batch-test.js 2330 2454 2317
 
 ## 技術特點
 
-- **純 Node.js ESM**：零外部依賴（僅 `dotenv`），無需 Python 或 R
+- **純 Node.js ESM**：最小依賴（Express、better-sqlite3、dotenv、cors），無需 Python 或 R
 - **並行數據抓取**：8 個 API 呼叫同時發出，減少等待時間
 - **單位自動校正**：FinMind 財報數據可能以千元為單位，系統自動偵測並修正
 - **動態流通股數估算**：從財報推算，無需外部股本資料
 - **三種輸出格式**：Terminal（ANSI 彩色）、Markdown（GitHub 可讀）、JSON（程式整合）
 - **進度訊息與報告分離**：進度用 `stderr`、報告用 `stdout`，支援 pipe
+- **HTTP API 微服務**：Express + SQLite 持久化，支援單股/批次分析、歷史比較、追蹤清單
+- **LLM 智慧分類**：GPT-4o 動態分類 + 權重分配，Guardrails 雙層驗證確保安全回退
+- **n8n 工作流整合**：每週自動排程 + Webhook 按需查詢，Telegram/Email 通知
+- **零侵入式 LLM 增強**：LLM 僅重新加權，不修改任何原始計算邏輯，確定性結果完整保留
 
 ## 限制與注意事項
 
