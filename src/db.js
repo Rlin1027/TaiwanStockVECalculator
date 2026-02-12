@@ -73,3 +73,28 @@ export function getPortfolio() {
     addedAt: row.added_at,
   }));
 }
+
+// ── LLM 重新合成用查詢 ──
+
+export function getLatestTwo(ticker) {
+  const stmt = db.prepare('SELECT id, ticker, result_json, created_at FROM analyses WHERE ticker = ? ORDER BY created_at DESC LIMIT 2');
+  const rows = stmt.all(ticker);
+  return rows.map(row => ({
+    id: row.id,
+    ticker: row.ticker,
+    result: JSON.parse(row.result_json),
+    createdAt: row.created_at,
+  }));
+}
+
+export function getLatest(ticker) {
+  const stmt = db.prepare('SELECT id, ticker, result_json, created_at FROM analyses WHERE ticker = ? ORDER BY created_at DESC LIMIT 1');
+  const row = stmt.get(ticker);
+  if (!row) return null;
+  return {
+    id: row.id,
+    ticker: row.ticker,
+    result: JSON.parse(row.result_json),
+    createdAt: row.created_at,
+  };
+}

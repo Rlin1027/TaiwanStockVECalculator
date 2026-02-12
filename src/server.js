@@ -4,7 +4,9 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { analyzeStock, analyzeBatch } from './service.js';
-import { saveAnalysis, getHistory, addToPortfolio, removeFromPortfolio, getPortfolio } from './db.js';
+import { saveAnalysis, getHistory, getLatest, getLatestTwo, addToPortfolio, removeFromPortfolio, getPortfolio } from './db.js';
+import { validateLLMOutput, validateBatchLLMOutput, extractModelAvailability } from './llm/guardrails.js';
+import { resynthesize } from './llm/resynthesize.js';
 
 const app = express();
 
@@ -105,6 +107,172 @@ app.get('/api/history/:ticker', (req, res) => {
     res.json({ ticker, analyses });
   } catch (err) {
     res.status(500).json({ error: 'Query Failed', message: err.message });
+  }
+});
+
+// ── LLM 智慧分類端點 ──
+
+// 歷史差異比較
+app.get('/api/compare/:ticker', (req, res) => {
+  const { ticker } = req.params;
+
+  if (!isValidTicker(ticker)) {
+    return res.status(400).json({ error: 'Bad Request', message: `Invalid ticker format: ${ticker}` });
+  }
+
+  try {
+    const rows = getLatestTwo(ticker);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Not Found', message: `No analysis history for ${ticker}` });
+    }
+
+    if (rows.length === 1) {
+      return res.json({ ticker, isFirstAnalysis: true, latest: rows[0], delta: null });
+    }
+
+    const [latest, previous] = rows;
+    const l = latest.result;
+    const p = previous.result;
+
+    const daysBetween = Math.round(
+      (new Date(latest.createdAt) - new Date(previous.createdAt)) / (1000 * 60 * 60 * 24)
+    );
+
+    const delta = {
+      priceChange: l.currentPrice - p.currentPrice,
+      priceChangePct: p.currentPrice > 0
+        ? Math.round(((l.currentPrice - p.currentPrice) / p.currentPrice) * 10000) / 100
+        : null,
+      fairValueChange: (l.weightedValuation?.fairValue || 0) - (p.weightedValuation?.fairValue || 0),
+      classificationChanged: l.classification?.type !== p.classification?.type,
+      previousClassification: p.classification?.type,
+      currentClassification: l.classification?.type,
+      actionChanged: l.recommendation?.action !== p.recommendation?.action,
+      previousAction: p.recommendation?.action,
+      currentAction: l.recommendation?.action,
+      modelFairValues: {
+        dcf: { current: l.weightedValuation?.dcfFairValue ?? null, previous: p.weightedValuation?.dcfFairValue ?? null },
+        per: { current: l.weightedValuation?.perFairValue ?? null, previous: p.weightedValuation?.perFairValue ?? null },
+        pbr: { current: l.weightedValuation?.pbrFairValue ?? null, previous: p.weightedValuation?.pbrFairValue ?? null },
+        div: { current: l.weightedValuation?.divFairValue ?? null, previous: p.weightedValuation?.divFairValue ?? null },
+        capex: { current: l.weightedValuation?.capexFairValue ?? null, previous: p.weightedValuation?.capexFairValue ?? null },
+        evEbitda: { current: l.weightedValuation?.evEbitdaFairValue ?? null, previous: p.weightedValuation?.evEbitdaFairValue ?? null },
+        psr: { current: l.weightedValuation?.psrFairValue ?? null, previous: p.weightedValuation?.psrFairValue ?? null },
+      },
+      daysBetween,
+    };
+
+    res.json({ ticker, isFirstAnalysis: false, latest, previous, delta });
+  } catch (err) {
+    res.status(500).json({ error: 'Compare Failed', message: err.message });
+  }
+});
+
+// 批次重新合成（必須在 :ticker 之前註冊）
+app.post('/api/resynthesize/batch', (req, res) => {
+  const { stocks, save = false } = req.body || {};
+
+  if (!stocks || typeof stocks !== 'object' || Object.keys(stocks).length === 0) {
+    return res.status(400).json({ error: 'Bad Request', message: 'Request body must contain a non-empty stocks object' });
+  }
+
+  try {
+    const results = [];
+    const errors = [];
+    let enhancedCount = 0;
+    let fallbackCount = 0;
+
+    for (const [ticker, llmOutput] of Object.entries(stocks)) {
+      if (!isValidTicker(ticker)) {
+        errors.push({ ticker, error: `Invalid ticker format: ${ticker}` });
+        continue;
+      }
+
+      const record = getLatest(ticker);
+      if (!record) {
+        errors.push({ ticker, error: `No analysis found for ${ticker}` });
+        continue;
+      }
+
+      const available = extractModelAvailability(record.result);
+      const validation = validateLLMOutput(llmOutput, available);
+
+      if (!validation.valid) {
+        fallbackCount++;
+        results.push({
+          ticker,
+          source: 'deterministic-fallback',
+          guardrailErrors: validation.errors,
+          result: record.result,
+        });
+        continue;
+      }
+
+      const enhanced = resynthesize(record.result, validation.sanitized);
+      enhancedCount++;
+
+      if (save) {
+        saveAnalysis(ticker, enhanced);
+      }
+
+      results.push({ ticker, source: 'llm-enhanced', result: enhanced });
+    }
+
+    res.json({
+      results,
+      errors,
+      summary: {
+        total: Object.keys(stocks).length,
+        enhanced: enhancedCount,
+        fallback: fallbackCount,
+        failed: errors.length,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Batch Resynthesize Failed', message: err.message });
+  }
+});
+
+// 單股重新合成
+app.post('/api/resynthesize/:ticker', (req, res) => {
+  const { ticker } = req.params;
+  const { llmClassification, save = false } = req.body || {};
+
+  if (!isValidTicker(ticker)) {
+    return res.status(400).json({ error: 'Bad Request', message: `Invalid ticker format: ${ticker}` });
+  }
+
+  if (!llmClassification) {
+    return res.status(400).json({ error: 'Bad Request', message: 'Request body must contain llmClassification' });
+  }
+
+  try {
+    const record = getLatest(ticker);
+    if (!record) {
+      return res.status(404).json({ error: 'Not Found', message: `No analysis found for ${ticker}` });
+    }
+
+    const available = extractModelAvailability(record.result);
+    const validation = validateLLMOutput(llmClassification, available);
+
+    if (!validation.valid) {
+      return res.json({
+        source: 'deterministic-fallback',
+        guardrailErrors: validation.errors,
+        result: record.result,
+      });
+    }
+
+    const enhanced = resynthesize(record.result, validation.sanitized);
+
+    if (save) {
+      saveAnalysis(ticker, enhanced);
+    }
+
+    res.json(enhanced);
+  } catch (err) {
+    res.status(500).json({ error: 'Resynthesize Failed', message: err.message });
   }
 });
 
