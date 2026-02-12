@@ -94,8 +94,8 @@ export function analyzeRevenueMomentum({ monthRevenue }) {
  */
 export function calcGrowthAdjustment(momentum, annualCAGR) {
   if (!momentum?.available) return 0;
-  const monthlyMomentum = momentum.rawShortTerm;
-  if (monthlyMomentum > annualCAGR + 0.10) return 0.05;
-  if (monthlyMomentum < annualCAGR - 0.10) return -0.05;
-  return 0;
+  const shortTermGrowth = momentum.rawShortTerm;
+  const diff = shortTermGrowth - annualCAGR;
+  // 連續函數：差值的 30% 作為調整量，上下限 ±10pp
+  return Math.min(0.10, Math.max(-0.10, diff * 0.3));
 }

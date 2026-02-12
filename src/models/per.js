@@ -25,10 +25,11 @@ export function analyzePER({ ticker, per, financials, currentPrice }) {
     };
   }
 
-  // ── 2. 整理歷史 PER 數據 ──
-  const perValues = per
+  // ── 2. 整理歷史 PER 數據（近 3 年滾動窗口） ──
+  const perValues = [...per]
+    .sort((a, b) => new Date(a.date) - new Date(b.date))
     .map(d => parseFloat(d.PER))
-    .filter(v => v > 0 && isFinite(v));
+    .filter(v => v > 0 && v < 100 && isFinite(v));
 
   if (perValues.length < 60) {
     return {
@@ -38,9 +39,13 @@ export function analyzePER({ ticker, per, financials, currentPrice }) {
     };
   }
 
-  // ── 3. 統計：平均值與標準差 ──
-  const avgPE = mean(perValues);
-  const stdPE = stddev(perValues);
+  // ── 3. 統計：使用近 3 年滾動窗口（避免結構轉型公司的過時估值區間） ──
+  const rollingWindow = 750; // 約 3 年交易日
+  const recentPERValues = perValues.length > rollingWindow
+    ? perValues.slice(-rollingWindow)
+    : perValues;
+  const avgPE = mean(recentPERValues);
+  const stdPE = stddev(recentPERValues);
 
   // ── 4. 取得當前 PER ──
   const latestPER = per.length > 0 ? parseFloat(per[per.length - 1].PER) : null;
@@ -48,13 +53,11 @@ export function analyzePER({ ticker, per, financials, currentPrice }) {
 
   // ── 5. PER 河流圖帶狀區間 ──
   const bands = {
-    cheapBelow: round(avgPE - stdPE),       // 便宜線
-    fairLow: round(avgPE - stdPE),
-    fairHigh: round(avgPE + stdPE),
-    expensiveAbove: round(avgPE + stdPE),    // 昂貴線
-    mean: round(avgPE),
-    minus2SD: round(avgPE - 2 * stdPE),
-    plus2SD: round(avgPE + 2 * stdPE),
+    minus2SD: round(avgPE - 2 * stdPE),   // 極度便宜
+    cheapBelow: round(avgPE - stdPE),       // 便宜線 (-1SD)
+    mean: round(avgPE),                     // 均值
+    expensiveAbove: round(avgPE + stdPE),   // 昂貴線 (+1SD)
+    plus2SD: round(avgPE + 2 * stdPE),      // 極度昂貴
   };
 
   // ── 6. 判斷位置 ──

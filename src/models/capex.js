@@ -62,7 +62,6 @@ export function analyzeCapEx({ ticker, financials, cashFlows, per, currentPrice 
   // 限制範圍 [-20%, +50%]
   capExCAGR = Math.max(-0.20, Math.min(0.50, capExCAGR));
 
-  // ── Step 3：計算 CapEx → 營收傳導比率 ──
   const annualRevenues = aggregateAnnualFinancials(financials, 'Revenue');
   const completeRevenues = annualRevenues.filter(r => r.quarters === 4);
   const revenueValues = completeRevenues.map(r => r.value);
@@ -73,13 +72,35 @@ export function analyzeCapEx({ ticker, financials, cashFlows, per, currentPrice 
     revCAGR = calcCAGR(revenueValues.slice(0, revYears + 1), revYears);
   }
 
+  // ── Step 3：計算 CapEx → 營收傳導比率（含時間滯後） ──
+  // CapEx 投入到營收產出通常有 1-2 年滯後
+  // 使用 T-2 年的 CapEx 成長率與 T 年的營收成長率比較
   let transmissionRatio;
-  if (capExCAGR !== 0 && Math.abs(capExCAGR) > 0.01 && revCAGR !== null) {
+  if (smoothedCapEx.length >= 4 && completeRevenues.length >= 3) {
+    // lag 2 年：用較早期的 CapEx 數據
+    const laggedCapExValues = smoothedCapEx.slice(2).map(d => d.value);
+    const laggedCapExYears = Math.min(laggedCapExValues.length - 1, 3);
+    const laggedCapExCAGR = laggedCapExYears > 0 ? calcCAGR(laggedCapExValues.slice(0, laggedCapExYears + 1), laggedCapExYears) : null;
+
+    // 近期營收 CAGR
+    const recentRevValues = completeRevenues.slice(0, 3).map(r => r.value);
+    const recentRevCAGR = recentRevValues.length >= 2 ? calcCAGR(recentRevValues, recentRevValues.length - 1) : revCAGR;
+
+    if (laggedCapExCAGR !== null && Math.abs(laggedCapExCAGR) > 0.01 && recentRevCAGR !== null) {
+      transmissionRatio = recentRevCAGR / laggedCapExCAGR;
+      transmissionRatio = Math.max(0.2, Math.min(1.5, transmissionRatio));
+    } else if (capExCAGR !== 0 && Math.abs(capExCAGR) > 0.01 && revCAGR !== null) {
+      // fallback: 無足夠滯後數據時用同期比率
+      transmissionRatio = revCAGR / capExCAGR;
+      transmissionRatio = Math.max(0.2, Math.min(1.5, transmissionRatio));
+    } else {
+      transmissionRatio = 0.5;
+    }
+  } else if (capExCAGR !== 0 && Math.abs(capExCAGR) > 0.01 && revCAGR !== null) {
     transmissionRatio = revCAGR / capExCAGR;
-    // 限制範圍 [0.2, 1.5]
     transmissionRatio = Math.max(0.2, Math.min(1.5, transmissionRatio));
   } else {
-    transmissionRatio = 0.5; // 預設值
+    transmissionRatio = 0.5;
   }
 
   // ── Step 4：前瞻營收成長率 ──
@@ -91,8 +112,8 @@ export function analyzeCapEx({ ticker, financials, cashFlows, per, currentPrice 
   }
   const recentCapExGrowth = smoothedCapEx[0].value / smoothedCapEx[1].value - 1;
   let forwardRevenueGrowth = recentCapExGrowth * transmissionRatio;
-  // 限制範圍 [0%, 40%]
-  forwardRevenueGrowth = Math.max(0, Math.min(0.40, forwardRevenueGrowth));
+  // 限制範圍 [-5%, 40%]（允許小幅衰退）
+  forwardRevenueGrowth = Math.max(-0.05, Math.min(0.40, forwardRevenueGrowth));
 
   // ── Step 5：前瞻盈餘成長率（營業槓桿） ──
   const annualOpIncome = aggregateAnnualFinancials(financials, 'OperatingIncome');

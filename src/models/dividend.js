@@ -2,6 +2,7 @@
 // 三大維度：殖利率河流圖、配息安全性、配息穩定性
 
 import { DIVIDEND_CONFIG } from '../config.js';
+import { getWACC, getSector } from '../config.js';
 import { round, mean, stddev } from './utils.js';
 
 /**
@@ -15,7 +16,7 @@ import { round, mean, stddev } from './utils.js';
  * @param {number} params.currentPrice - 目前股價
  * @returns {object} DividendResult
  */
-export function analyzeDividend({ ticker, dividends, priceHistory, financials, currentPrice }) {
+export function analyzeDividend({ ticker, dividends, priceHistory, financials, currentPrice, stockInfo = null }) {
   const { payoutSafe, payoutModerate, aristocratYears, minYearsForAnalysis } = DIVIDEND_CONFIG;
 
   // ── 整理年度股利數據 ──
@@ -54,6 +55,29 @@ export function analyzeDividend({ ticker, dividends, priceHistory, financials, c
     ? round(((fairValue - currentPrice) / currentPrice) * 100)
     : null;
 
+  // ── 5. GGM 獨立估值（Gordon Growth Model） ──
+  let ggm = null;
+  if (latestDividend > 0 && consistencyData.avgGrowthRate !== null) {
+    const sector = getSector(ticker, stockInfo);
+    const requiredReturn = getWACC(ticker, sector);
+    const divGrowthRate = Math.max(0, Math.min(0.06, (consistencyData.avgGrowthRate || 0) / 100));
+
+    if (requiredReturn > divGrowthRate + 0.01) {
+      const d1 = latestDividend * (1 + divGrowthRate);
+      const ggmFairValue = d1 / (requiredReturn - divGrowthRate);
+      const ggmUpside = currentPrice > 0
+        ? round(((ggmFairValue - currentPrice) / currentPrice) * 100)
+        : 0;
+      ggm = {
+        fairValue: round(ggmFairValue),
+        upside: ggmUpside,
+        d1: round(d1),
+        requiredReturn: round(requiredReturn * 100),
+        divGrowthRate: round(divGrowthRate * 100),
+      };
+    }
+  }
+
   // 綜合信號
   let signal = 'FAIR';
   if (yieldData.position === '便宜' && payoutData.latestGrade !== 'WARNING') {
@@ -75,6 +99,7 @@ export function analyzeDividend({ ticker, dividends, priceHistory, financials, c
     consistency: consistencyData,
     latestDividend,
     annualDividends,
+    ggm,
   };
 }
 

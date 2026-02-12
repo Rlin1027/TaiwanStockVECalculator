@@ -11,6 +11,8 @@ import { analyzeDividend } from './models/dividend.js';
 import { analyzePER } from './models/per.js';
 import { analyzePBR } from './models/pbr.js';
 import { analyzeCapEx } from './models/capex.js';
+import { analyzeEVEBITDA } from './models/ev-ebitda.js';
+import { analyzePSR } from './models/psr.js';
 import { analyzeRevenueMomentum } from './models/momentum.js';
 import { synthesize } from './report/synthesizer.js';
 import { toJSON, toMarkdown, toTerminal } from './report/formatters.js';
@@ -101,6 +103,7 @@ async function main() {
       priceHistory: data.priceHistory,
       financials: data.financials,
       currentPrice: data.latestPrice,
+      stockInfo: data.stockInfo,
     });
   } catch (err) {
     console.error(`⚠️ 股利模型執行失敗: ${err.message}`);
@@ -148,6 +151,32 @@ async function main() {
     capexResult = { available: false, reason: `模型錯誤: ${err.message}` };
   }
 
+  let evEbitdaResult;
+  try {
+    evEbitdaResult = analyzeEVEBITDA({
+      ticker,
+      financials: data.financials,
+      cashFlows: data.cashFlows,
+      balanceSheet: data.balanceSheet,
+      currentPrice: data.latestPrice,
+    });
+  } catch (err) {
+    console.error(`⚠️ EV/EBITDA 模型執行失敗: ${err.message}`);
+    evEbitdaResult = { available: false, reason: `模型錯誤: ${err.message}` };
+  }
+
+  let psrResult;
+  try {
+    psrResult = analyzePSR({
+      ticker,
+      financials: data.financials,
+      currentPrice: data.latestPrice,
+    });
+  } catch (err) {
+    console.error(`⚠️ PSR 模型執行失敗: ${err.message}`);
+    psrResult = { available: false, reason: `模型錯誤: ${err.message}` };
+  }
+
   // ── Step 4: 綜合判斷 ──
   console.error('📊 綜合分析中...');
   const report = synthesize({
@@ -156,6 +185,8 @@ async function main() {
     per: perResult,
     pbr: pbrResult,
     capex: capexResult,
+    evEbitda: evEbitdaResult,
+    psr: psrResult,
     momentum,
     ticker,
     currentPrice: data.latestPrice,

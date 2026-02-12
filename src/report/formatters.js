@@ -18,7 +18,8 @@ function sigEmoji(signal) {
 export function toMarkdown(result) {
   const { ticker, currentPrice, classification, weightedValuation: wv,
     recommendation: rec, risks, dcfSummary: dcf, perSummary: per,
-    pbrSummary: pbr, capexSummary: capex, dividendSummary: div, momentumSummary: mom } = result;
+    pbrSummary: pbr, capexSummary: capex, evEbitdaSummary: evEbitda, psrSummary: psr,
+    dividendSummary: div, momentumSummary: mom } = result;
 
   const signalEmoji = { BUY: '🟢', HOLD: '🟡', SELL: '🔴' };
   const gradeEmoji = { SAFE: '🟢', MODERATE: '🟡', WARNING: '🔴', 'N/A': '⚪' };
@@ -48,8 +49,8 @@ export function toMarkdown(result) {
     md += `| 信號 | ${mom.signal} |\n\n`;
   }
 
-  // ── 五模型比較 ──
-  md += `## 五模型估值比較\n\n`;
+  // ── 七模型比較 ──
+  md += `## 七模型估值比較\n\n`;
   md += `| 模型 | 合理價 | 信號 | 權重 | 關鍵指標 |\n`;
   md += `|:---|---:|:---|---:|:---|\n`;
 
@@ -90,6 +91,20 @@ export function toMarkdown(result) {
     md += `| 股利（存股） | ${div.fairValue ?? 'N/A'} 元 | ${sigEmoji(div.signal)} | ${pct(wv.divWeight)} | 殖利率 ${div.currentYield}%, ${div.yieldPosition} |\n`;
   } else {
     md += `| 股利（存股） | N/A | ⚪ | ${pct(wv.divWeight)} | ${div.reason} |\n`;
+  }
+
+  // EV/EBITDA
+  if (evEbitda?.available !== false && evEbitda) {
+    md += `| EV/EBITDA | ${evEbitda.fairValue} 元 | ${sigEmoji(evEbitda.signal)} | ${pct(wv.evEbitdaWeight)} | EV/EBITDA ${evEbitda.currentEVEBITDA}x, 均值 ${evEbitda.avgEVEBITDA}x, ${evEbitda.position} |\n`;
+  } else {
+    md += `| EV/EBITDA | N/A | ⚪ | ${pct(wv.evEbitdaWeight)} | ${evEbitda?.reason || 'EV/EBITDA 不可用'} |\n`;
+  }
+
+  // PSR
+  if (psr?.available !== false && psr) {
+    md += `| PSR（營收比） | ${psr.fairValue} 元 | ${sigEmoji(psr.signal)} | ${pct(wv.psrWeight)} | PSR ${psr.currentPSR}x, 均值 ${psr.avgPSR}x, ${psr.position} |\n`;
+  } else {
+    md += `| PSR（營收比） | N/A | ⚪ | ${pct(wv.psrWeight)} | ${psr?.reason || 'PSR 不可用'} |\n`;
   }
   md += '\n';
 
@@ -145,6 +160,31 @@ export function toMarkdown(result) {
     md += `| 使用 PER | ${capex.avgPE}x（${capex.peSource}）|\n\n`;
   }
 
+  // ── EV/EBITDA 詳情 ──
+  if (evEbitda?.available !== false && evEbitda) {
+    md += `## EV/EBITDA 估值分析\n\n`;
+    md += `| 指標 | 數值 |\n|:---|---:|\n`;
+    md += `| 合理價 | ${evEbitda.fairValue} 元 |\n`;
+    md += `| 當前 EV/EBITDA | ${evEbitda.currentEVEBITDA}x |\n`;
+    md += `| 歷史平均 EV/EBITDA | ${evEbitda.avgEVEBITDA}x |\n`;
+    md += `| EV/EBITDA 標準差 | ${evEbitda.stdEVEBITDA}x |\n`;
+    md += `| EBITDA | ${evEbitda.ebitda} |\n`;
+    md += `| 企業價值 (EV) | ${evEbitda.ev} |\n`;
+    md += `| 估值位置 | ${evEbitda.position} |\n\n`;
+  }
+
+  // ── PSR 詳情 ──
+  if (psr?.available !== false && psr) {
+    md += `## PSR 股價營收比分析\n\n`;
+    md += `| 指標 | 數值 |\n|:---|---:|\n`;
+    md += `| 合理價 | ${psr.fairValue} 元 |\n`;
+    md += `| 當前 PSR | ${psr.currentPSR}x |\n`;
+    md += `| 歷史平均 PSR | ${psr.avgPSR}x |\n`;
+    md += `| PSR 標準差 | ${psr.stdPSR}x |\n`;
+    md += `| 每股營收 (RPS) | ${psr.rps} 元 |\n`;
+    md += `| 估值位置 | ${psr.position} |\n\n`;
+  }
+
   // ── 建議理由 ──
   md += `## 綜合分析\n\n`;
   for (const reason of rec.reasons) {
@@ -171,7 +211,7 @@ export function toMarkdown(result) {
     md += `| 估值位置 | ${pbr.position} |\n\n`;
   }
 
-  md += `---\n*本報告由台股五模型估值系統自動產生，僅供參考，不構成投資建議。*\n`;
+  md += `---\n*本報告由台股七模型估值系統自動產生，僅供參考，不構成投資建議。*\n`;
 
   return md;
 }
@@ -180,7 +220,8 @@ export function toMarkdown(result) {
 export function toTerminal(result) {
   const { ticker, currentPrice, classification, weightedValuation: wv,
     recommendation: rec, risks, dcfSummary: dcf, perSummary: per,
-    pbrSummary: pbr, capexSummary: capex, dividendSummary: div, momentumSummary: mom } = result;
+    pbrSummary: pbr, capexSummary: capex, evEbitdaSummary: evEbitda, psrSummary: psr,
+    dividendSummary: div, momentumSummary: mom } = result;
 
   // ANSI 顏色
   const R = '\x1b[0m';    // Reset
@@ -229,9 +270,9 @@ export function toTerminal(result) {
     out += `信號: ${momColor(mom.signal)}${mom.signal}${R}\n\n`;
   }
 
-  // 五模型比較
+  // 七模型比較
   out += `${D}──────────────────────────────────────────────${R}\n`;
-  out += `${B}  五模型估值比較${R}\n`;
+  out += `${B}  七模型估值比較${R}\n`;
   out += `${D}──────────────────────────────────────────────${R}\n\n`;
 
   // DCF
@@ -294,6 +335,30 @@ export function toTerminal(result) {
     out += `    ${D}${div.reason}${R}\n\n`;
   }
 
+  // EV/EBITDA
+  if (evEbitda?.available !== false && evEbitda) {
+    out += `  ${C}EV/EBITDA${R}  [${pct(wv.evEbitdaWeight)}]\n`;
+    out += `    合理價: ${B}${evEbitda.fairValue}${R} 元  `;
+    out += `信號: ${sigColor(evEbitda.signal)}${evEbitda.signal}${R}  `;
+    out += `漲幅: ${evEbitda.upside > 0 ? G : RE}${evEbitda.upside}%${R}\n`;
+    out += `    當前: ${evEbitda.currentEVEBITDA}x  平均: ${evEbitda.avgEVEBITDA}x  位置: ${evEbitda.position}\n\n`;
+  } else {
+    out += `  ${C}EV/EBITDA${R}  [${pct(wv.evEbitdaWeight)}]\n`;
+    out += `    ${D}${evEbitda?.reason || 'EV/EBITDA 不可用'}${R}\n\n`;
+  }
+
+  // PSR
+  if (psr?.available !== false && psr) {
+    out += `  ${C}PSR（營收比）${R}  [${pct(wv.psrWeight)}]\n`;
+    out += `    合理價: ${B}${psr.fairValue}${R} 元  `;
+    out += `信號: ${sigColor(psr.signal)}${psr.signal}${R}  `;
+    out += `漲幅: ${psr.upside > 0 ? G : RE}${psr.upside}%${R}\n`;
+    out += `    當前 PSR: ${psr.currentPSR}x  平均 PSR: ${psr.avgPSR}x  位置: ${psr.position}\n\n`;
+  } else {
+    out += `  ${C}PSR（營收比）${R}  [${pct(wv.psrWeight)}]\n`;
+    out += `    ${D}${psr?.reason || 'PSR 不可用'}${R}\n\n`;
+  }
+
   // 建議理由
   out += `${D}──────────────────────────────────────────────${R}\n`;
   out += `${B}  綜合分析${R}\n`;
@@ -311,7 +376,7 @@ export function toTerminal(result) {
   }
 
   out += `\n${D}  分析時間: ${result.timestamp}${R}\n`;
-  out += `${D}  * 本報告由台股五模型估值系統自動產生，僅供參考，不構成投資建議。${R}\n\n`;
+  out += `${D}  * 本報告由台股七模型估值系統自動產生，僅供參考，不構成投資建議。${R}\n\n`;
 
   return out;
 }

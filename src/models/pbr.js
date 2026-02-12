@@ -16,9 +16,14 @@ import { round, mean, stddev, estimateSharesOutstanding } from './utils.js';
  * @returns {object} PBRResult
  */
 export function analyzePBR({ ticker, per, balanceSheet, financials, currentPrice }) {
-  // ── 1. 從 PER 數據取得歷史 PBR ──
+  // ── 1. 從 PER 數據取得歷史 PBR（近 3 年滾動窗口） ──
+  const threeYearsAgo = new Date();
+  threeYearsAgo.setFullYear(threeYearsAgo.getFullYear() - 3);
+  const threeYearsAgoStr = threeYearsAgo.toISOString().slice(0, 10);
+
   const pbrRecords = (per || [])
     .filter(d => {
+      if (d.date < threeYearsAgoStr) return false;
       const pbr = parseFloat(d.price_book_ratio || d.PBR);
       return !isNaN(pbr) && pbr > 0;
     })
@@ -28,11 +33,11 @@ export function analyzePBR({ ticker, per, balanceSheet, financials, currentPrice
     }))
     .sort((a, b) => new Date(a.date) - new Date(b.date));
 
-  if (pbrRecords.length < 20) {
+  if (pbrRecords.length < 120) {
     return {
       ticker,
       available: false,
-      reason: `PBR 歷史數據不足（僅 ${pbrRecords.length} 筆，需至少 20 筆）`,
+      reason: `PBR 歷史數據不足（僅 ${pbrRecords.length} 筆，需至少 120 筆）`,
     };
   }
 
@@ -60,8 +65,12 @@ export function analyzePBR({ ticker, per, balanceSheet, financials, currentPrice
     };
   }
 
-  // ── 3. PBR 統計分析 ──
-  const pbrValues = pbrRecords.map(d => d.pbr);
+  // ── 3. PBR 統計分析（近 3 年滾動窗口） ──
+  const allPbrValues = pbrRecords.map(d => d.pbr);
+  const pbrRollingWindow = 750;
+  const pbrValues = allPbrValues.length > pbrRollingWindow
+    ? allPbrValues.slice(-pbrRollingWindow)
+    : allPbrValues;
   const avgPBR = mean(pbrValues);
   const stdPBR = stddev(pbrValues);
   const currentPBR = currentPrice / bvps;

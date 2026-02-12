@@ -6,6 +6,11 @@ import { fetchAllData } from './api/finmind.js';
 import { calculateDCF } from './models/dcf.js';
 import { analyzeDividend } from './models/dividend.js';
 import { analyzePER } from './models/per.js';
+import { analyzePBR } from './models/pbr.js';
+import { analyzeCapEx } from './models/capex.js';
+import { analyzeEVEBITDA } from './models/ev-ebitda.js';
+import { analyzePSR } from './models/psr.js';
+import { analyzeRevenueMomentum } from './models/momentum.js';
 import { synthesize } from './report/synthesizer.js';
 
 const tickers = process.argv.slice(2);
@@ -13,6 +18,8 @@ if (tickers.length === 0) {
   console.error('用法: node src/batch-test.js 2330 2454 ...');
   process.exit(1);
 }
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const batchName = process.env.BATCH_NAME || 'Batch';
 console.log(`\n=== ${batchName}：測試 ${tickers.length} 檔 ===\n`);
@@ -27,21 +34,118 @@ for (const ticker of tickers) {
       continue;
     }
 
-    const dcf = calculateDCF({
-      ticker, financials: data.financials,
-      cashFlows: data.cashFlows, currentPrice: data.latestPrice,
-    });
-    const dividend = analyzeDividend({
-      ticker, dividends: data.dividends,
-      priceHistory: data.priceHistory, financials: data.financials,
-      currentPrice: data.latestPrice,
-    });
-    const per = analyzePER({
-      ticker, per: data.per,
-      financials: data.financials, currentPrice: data.latestPrice,
-    });
+    // 營收動能分析
+    const momentum = analyzeRevenueMomentum({ monthRevenue: data.monthRevenue });
+
+    // DCF 模型
+    let dcfResult;
+    try {
+      dcfResult = calculateDCF({
+        ticker,
+        financials: data.financials,
+        cashFlows: data.cashFlows,
+        currentPrice: data.latestPrice,
+        momentum,
+        stockInfo: data.stockInfo,
+      });
+    } catch (e) {
+      dcfResult = { ticker, fairValue: 0, upside: 0, signal: 'N/A', sector: '未知', details: { growthRate: 0, wacc: 0, fcfBase: 0, sharesMethod: 'N/A', terminalWarning: null, growthPhases: [], momentumAdjustment: null } };
+    }
+
+    // 股利模型
+    let dividendResult;
+    try {
+      dividendResult = analyzeDividend({
+        ticker,
+        dividends: data.dividends,
+        priceHistory: data.priceHistory,
+        financials: data.financials,
+        currentPrice: data.latestPrice,
+        stockInfo: data.stockInfo,
+      });
+    } catch (e) {
+      dividendResult = { ticker, available: false, reason: `模型錯誤: ${e.message}` };
+    }
+
+    // PER 模型
+    let perResult;
+    try {
+      perResult = analyzePER({
+        ticker,
+        per: data.per,
+        financials: data.financials,
+        currentPrice: data.latestPrice,
+      });
+    } catch (e) {
+      perResult = { ticker, available: false, reason: `模型錯誤: ${e.message}` };
+    }
+
+    // PBR 模型
+    let pbrResult;
+    try {
+      pbrResult = analyzePBR({
+        ticker,
+        per: data.per,
+        balanceSheet: data.balanceSheet,
+        financials: data.financials,
+        currentPrice: data.latestPrice,
+      });
+    } catch (e) {
+      pbrResult = { ticker, available: false, reason: `模型錯誤: ${e.message}` };
+    }
+
+    // CapEx 模型
+    let capexResult;
+    try {
+      capexResult = analyzeCapEx({
+        ticker,
+        financials: data.financials,
+        cashFlows: data.cashFlows,
+        per: perResult,
+        currentPrice: data.latestPrice,
+      });
+    } catch (e) {
+      capexResult = { available: false, reason: `模型錯誤: ${e.message}` };
+    }
+
+    // EV/EBITDA 模型
+    let evEbitdaResult;
+    try {
+      evEbitdaResult = analyzeEVEBITDA({
+        ticker,
+        financials: data.financials,
+        cashFlows: data.cashFlows,
+        balanceSheet: data.balanceSheet,
+        currentPrice: data.latestPrice,
+      });
+    } catch (e) {
+      evEbitdaResult = { available: false, reason: `模型錯誤: ${e.message}` };
+    }
+
+    // PSR 模型
+    let psrResult;
+    try {
+      psrResult = analyzePSR({
+        ticker,
+        financials: data.financials,
+        currentPrice: data.latestPrice,
+      });
+    } catch (e) {
+      psrResult = { available: false, reason: `模型錯誤: ${e.message}` };
+    }
+
+    // 綜合判斷
     const report = synthesize({
-      dcf, dividend, per, ticker, currentPrice: data.latestPrice,
+      dcf: dcfResult,
+      dividend: dividendResult,
+      per: perResult,
+      pbr: pbrResult,
+      capex: capexResult,
+      evEbitda: evEbitdaResult,
+      psr: psrResult,
+      momentum,
+      ticker,
+      currentPrice: data.latestPrice,
     });
 
     const rec = report.recommendation;
@@ -64,6 +168,9 @@ for (const ticker of tickers) {
     results.push({ ticker, status: 'ERROR', reason: err.message });
     console.log(`❌ ${ticker} | 錯誤: ${err.message}`);
   }
+
+  // Rate limiting：每檔之間等待 3 秒
+  if (ticker !== tickers[tickers.length - 1]) await sleep(3000);
 }
 
 // 統計摘要

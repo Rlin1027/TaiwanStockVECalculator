@@ -122,8 +122,11 @@ export function calculateDCF({ ticker, financials, cashFlows, currentPrice, mome
     sharesOutstanding = sharesResult.shares;
     sharesMethod = sharesResult.method;
   } else {
-    sharesOutstanding = 1e9;
-    sharesMethod = '預設值 (10億股)';
+    // 動態估算：依據股價推測合理市值範圍
+    // 台股中型股市值約 500-2000 億，假設中值 1000 億
+    const estimatedMarketCap = 1e11; // 1000 億（中型股假設）
+    sharesOutstanding = currentPrice > 0 ? estimatedMarketCap / currentPrice : 5e8;
+    sharesMethod = '動態估算 (假設中型股市值 1000 億)';
   }
 
   // ── 4. DCF 多階段現金流預測 ──
@@ -155,7 +158,8 @@ export function calculateDCF({ ticker, financials, cashFlows, currentPrice, mome
 
   // ── 5. 終端價值（Gordon Growth Model）──
   const lastYearFCF = projections[projectionYears - 1].fcf;
-  const terminalValue = (lastYearFCF * (1 + terminalGrowthRate)) / (wacc - terminalGrowthRate);
+  const denominator = Math.max(0.03, wacc - terminalGrowthRate);
+  const terminalValue = (lastYearFCF * (1 + terminalGrowthRate)) / denominator;
   const terminalValuePV = terminalValue / Math.pow(1 + wacc, projectionYears);
   const totalPV = sumPV + terminalValuePV;
 
@@ -165,6 +169,10 @@ export function calculateDCF({ ticker, financials, cashFlows, currentPrice, mome
   const upside = currentPrice > 0
     ? ((fairValue - currentPrice) / currentPrice) * 100
     : 0;
+
+  // ── FCF Yield（巴菲特價值投資核心指標） ──
+  const fcfPerShare = fcfBase / sharesOutstanding;
+  const fcfYield = currentPrice > 0 ? (fcfPerShare / currentPrice) * 100 : 0;
 
   // ── 7. 終端價值佔比檢查（健康範圍: 50-80%）──
   const terminalRatio = totalPV > 0 ? (terminalValuePV / totalPV) * 100 : 0;
@@ -184,6 +192,8 @@ export function calculateDCF({ ticker, financials, cashFlows, currentPrice, mome
     signal: upside > 20 ? 'UNDERVALUED' : upside < -10 ? 'OVERVALUED' : 'FAIR',
     details: {
       fcfBase: round(fcfBase),
+      fcfPerShare: round(fcfPerShare),
+      fcfYield: round(fcfYield),
       fcfMethod,
       growthRate: round(growthRate * 100),
       revCAGR: revCAGR !== null ? round(revCAGR * 100) : null,
