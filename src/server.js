@@ -4,9 +4,20 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { analyzeStock, analyzeBatch } from './service.js';
-import { saveAnalysis, getHistory, getLatest, getLatestTwo, addToPortfolio, removeFromPortfolio, getPortfolio } from './db.js';
+import {
+  saveAnalysis, getHistory, getLatest, getLatestTwo,
+  addToPortfolio, removeFromPortfolio, getPortfolio,
+  getAccuracyByTicker, getAccuracySummary,
+  upsertHolding, getHoldings, getHolding, removeHolding,
+  createAlert, getActiveAlerts, getAlertsByTicker, deactivateAlert, updateAlertTriggered,
+} from './db.js';
 import { validateLLMOutput, validateBatchLLMOutput, extractModelAvailability } from './llm/guardrails.js';
 import { resynthesize } from './llm/resynthesize.js';
+import { runBacktest } from './backtest/engine.js';
+import { calculateSummary } from './backtest/metrics.js';
+import { calculatePortfolioAnalytics } from './portfolio/analytics.js';
+import { checkAlerts } from './portfolio/alerts.js';
+import { fetchStockPrice } from './api/finmind.js';
 
 const app = express();
 
@@ -273,6 +284,221 @@ app.post('/api/resynthesize/:ticker', (req, res) => {
     res.json(enhanced);
   } catch (err) {
     res.status(500).json({ error: 'Resynthesize Failed', message: err.message });
+  }
+});
+
+// ── Phase 3: 回測 API ──
+
+// 觸發回測掃描
+app.post('/api/backtest/run', async (req, res) => {
+  try {
+    const { minDaysAgo = 30, maxResults = 100 } = req.body || {};
+    const result = await runBacktest({ minDaysAgo, maxResults });
+
+    // 取最新的摘要統計
+    const allChecks = getAccuracySummary();
+    const summary = calculateSummary(allChecks);
+
+    res.json({ ...result, summary });
+  } catch (err) {
+    res.status(500).json({ error: 'Backtest Failed', message: err.message });
+  }
+});
+
+// 回測摘要統計
+app.get('/api/backtest/summary', (req, res) => {
+  try {
+    const allChecks = getAccuracySummary();
+    const summary = calculateSummary(allChecks);
+    res.json(summary);
+  } catch (err) {
+    res.status(500).json({ error: 'Query Failed', message: err.message });
+  }
+});
+
+// 特定股票的回測紀錄
+app.get('/api/backtest/:ticker', (req, res) => {
+  const { ticker } = req.params;
+  if (!isValidTicker(ticker)) {
+    return res.status(400).json({ error: 'Bad Request', message: `Invalid ticker format: ${ticker}` });
+  }
+
+  try {
+    const limit = parseInt(req.query.limit, 10) || 20;
+    const checks = getAccuracyByTicker(ticker, limit);
+    const metrics = calculateSummary(checks);
+    res.json({ ticker, checks, metrics });
+  } catch (err) {
+    res.status(500).json({ error: 'Query Failed', message: err.message });
+  }
+});
+
+// ── Phase 3: 投組持倉管理 ──
+
+// 取全部持倉
+app.get('/api/portfolio/holdings', (req, res) => {
+  try {
+    const holdings = getHoldings();
+    res.json({ holdings });
+  } catch (err) {
+    res.status(500).json({ error: 'Query Failed', message: err.message });
+  }
+});
+
+// 新增/更新持倉
+app.put('/api/portfolio/holdings/:ticker', (req, res) => {
+  const { ticker } = req.params;
+  if (!isValidTicker(ticker)) {
+    return res.status(400).json({ error: 'Bad Request', message: `Invalid ticker format: ${ticker}` });
+  }
+
+  try {
+    const { shares = 0, costBasis = 0, notes = '' } = req.body || {};
+    upsertHolding(ticker, { shares, costBasis, notes });
+    const holding = getHolding(ticker);
+    res.json({ ticker, holding });
+  } catch (err) {
+    res.status(500).json({ error: 'Operation Failed', message: err.message });
+  }
+});
+
+// 移除持倉
+app.delete('/api/portfolio/holdings/:ticker', (req, res) => {
+  const { ticker } = req.params;
+  if (!isValidTicker(ticker)) {
+    return res.status(400).json({ error: 'Bad Request', message: `Invalid ticker format: ${ticker}` });
+  }
+
+  try {
+    const result = removeHolding(ticker);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: 'Operation Failed', message: err.message });
+  }
+});
+
+// 投組分析（績效 + 配置 + 風險）
+app.get('/api/portfolio/analytics', (req, res) => {
+  try {
+    const holdings = getHoldings();
+    const latestAnalyses = {};
+    for (const h of holdings) {
+      const latest = getLatest(h.ticker);
+      if (latest) latestAnalyses[h.ticker] = latest;
+    }
+    const analytics = calculatePortfolioAnalytics(holdings, latestAnalyses);
+    res.json(analytics);
+  } catch (err) {
+    res.status(500).json({ error: 'Analytics Failed', message: err.message });
+  }
+});
+
+// ── Phase 3: 警示管理 ──
+
+// 列出所有啟用中的警示
+app.get('/api/alerts', (req, res) => {
+  try {
+    const alerts = getActiveAlerts();
+    res.json({ alerts });
+  } catch (err) {
+    res.status(500).json({ error: 'Query Failed', message: err.message });
+  }
+});
+
+// 建立警示
+app.post('/api/alerts', (req, res) => {
+  const { ticker, alertType, threshold } = req.body || {};
+
+  if (!ticker || !isValidTicker(ticker)) {
+    return res.status(400).json({ error: 'Bad Request', message: 'Valid ticker is required' });
+  }
+
+  const validTypes = ['price_above', 'price_below', 'upside_above', 'classification_change'];
+  if (!validTypes.includes(alertType)) {
+    return res.status(400).json({ error: 'Bad Request', message: `alertType must be one of: ${validTypes.join(', ')}` });
+  }
+
+  if (alertType !== 'classification_change' && (threshold == null || typeof threshold !== 'number')) {
+    return res.status(400).json({ error: 'Bad Request', message: 'threshold (number) is required for this alert type' });
+  }
+
+  try {
+    const info = createAlert(ticker, alertType, threshold ?? 0);
+    res.json({ id: info.lastInsertRowid, ticker, alertType, threshold });
+  } catch (err) {
+    res.status(500).json({ error: 'Operation Failed', message: err.message });
+  }
+});
+
+// 停用警示
+app.delete('/api/alerts/:id', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) {
+    return res.status(400).json({ error: 'Bad Request', message: 'Invalid alert id' });
+  }
+
+  try {
+    const result = deactivateAlert(id);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: 'Operation Failed', message: err.message });
+  }
+});
+
+// 觸發一次警示檢查
+app.post('/api/alerts/check', async (req, res) => {
+  try {
+    const alerts = getActiveAlerts();
+    if (alerts.length === 0) {
+      return res.json({ triggered: [], message: 'No active alerts' });
+    }
+
+    // 收集所有需要的 ticker
+    const tickers = [...new Set(alerts.map(a => a.ticker))];
+
+    // 取最新分析
+    const latestAnalyses = {};
+    for (const ticker of tickers) {
+      const latest = getLatest(ticker);
+      if (latest) latestAnalyses[ticker] = latest;
+    }
+
+    // 取當前股價（抓最近 5 天避免假日）
+    const currentPrices = {};
+    const fiveDaysAgo = new Date();
+    fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
+    const startDate = fiveDaysAgo.toISOString().slice(0, 10);
+
+    await Promise.all(tickers.map(async (ticker) => {
+      try {
+        const prices = await fetchStockPrice(ticker, startDate);
+        if (prices.length > 0) {
+          currentPrices[ticker] = parseFloat(prices[prices.length - 1].close);
+        }
+      } catch { /* skip ticker on error */ }
+    }));
+
+    // 檢查觸發
+    const triggered = checkAlerts(alerts, latestAnalyses, currentPrices);
+
+    // 更新觸發時間
+    for (const t of triggered) {
+      updateAlertTriggered(t.alert.id);
+    }
+
+    res.json({
+      triggered: triggered.map(t => ({
+        alertId: t.alert.id,
+        ticker: t.alert.ticker,
+        type: t.alert.alert_type,
+        threshold: t.alert.threshold,
+        message: t.message,
+      })),
+      checkedCount: alerts.length,
+      triggeredCount: triggered.length,
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Alert Check Failed', message: err.message });
   }
 });
 

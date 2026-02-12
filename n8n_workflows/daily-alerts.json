@@ -1,0 +1,149 @@
+{
+  "name": "每日警示檢查",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 18,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "id": "b1b2c3d4-2222-4000-b000-000000000001",
+      "name": "每日 18:00 觸發",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.VALUATION_API_URL + '/api/alerts/check' }}",
+        "options": {}
+      },
+      "id": "b1b2c3d4-2222-4000-b000-000000000002",
+      "name": "檢查警示",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst triggered = data.triggered || [];\n\nif (triggered.length === 0) {\n  return [{ json: { skip: true, message: 'No alerts triggered' } }];\n}\n\nconst now = new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' });\n\nlet message = `\\u{1F514} 警示通知\\n`;\nmessage += `${now}\\n\\n`;\nmessage += `共 ${triggered.length} 則警示觸發：\\n\\n`;\n\ntriggered.forEach((item, idx) => {\n  const icon = item.type === 'price_above' ? '\\u{1F4C8}'\n    : item.type === 'price_below' ? '\\u{1F4C9}'\n    : item.type === 'upside_above' ? '\\u{1F4B0}'\n    : '\\u{1F504}';\n  message += `${icon} ${idx + 1}. ${item.message}\\n`;\n});\n\nmessage += `\\n\\u{2139}\\uFE0F 已檢查 ${data.checkedCount} 則警示`;\n\nreturn [{ json: { telegramMessage: message, skip: false } }];"
+      },
+      "id": "b1b2c3d4-2222-4000-b000-000000000003",
+      "name": "格式化訊息",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-1",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "b1b2c3d4-2222-4000-b000-000000000004",
+      "name": "有觸發才發送",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [750, 300]
+    },
+    {
+      "parameters": {
+        "chatId": "",
+        "text": "={{ $json.telegramMessage }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "b1b2c3d4-2222-4000-b000-000000000005",
+      "name": "發送 Telegram 警示",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1000, 200],
+      "credentials": {
+        "telegramApi": {
+          "id": "",
+          "name": "Telegram Bot API"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "每日 18:00 觸發": {
+      "main": [
+        [
+          {
+            "node": "檢查警示",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "檢查警示": {
+      "main": [
+        [
+          {
+            "node": "格式化訊息",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "格式化訊息": {
+      "main": [
+        [
+          {
+            "node": "有觸發才發送",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "有觸發才發送": {
+      "main": [
+        [
+          {
+            "node": "發送 Telegram 警示",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Taipei"
+  },
+  "versionId": "1",
+  "meta": {
+    "instanceId": ""
+  },
+  "tags": []
+}
