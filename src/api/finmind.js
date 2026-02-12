@@ -17,7 +17,19 @@ async function fetchDataset(dataset, ticker, startDate) {
   const token = process.env.FINMIND_API_TOKEN;
   if (token) url.searchParams.set('token', token);
 
-  const res = await fetch(url.toString());
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+  let res;
+  try {
+    res = await fetch(url.toString(), { signal: controller.signal });
+  } catch (err) {
+    clearTimeout(timeout);
+    if (err.name === 'AbortError') {
+      throw new Error(`FinMind API 請求逾時（30 秒）: ${dataset}`);
+    }
+    throw err;
+  }
+  clearTimeout(timeout);
   if (!res.ok) {
     throw new Error(`FinMind API HTTP ${res.status}: ${res.statusText}`);
   }
@@ -60,27 +72,48 @@ export async function fetchDividends(ticker, startDate = defaultStartDate(11)) {
 }
 
 /** 取得歷史本益比 / 股價淨值比 */
-export async function fetchPER(ticker, startDate = defaultStartDate(2)) {
+export async function fetchPER(ticker, startDate = defaultStartDate()) {
   return fetchDataset('TaiwanStockPER', ticker, startDate);
+}
+
+/** 取得股票基本資訊（含 Industry_category 產業分類） */
+export async function fetchStockInfo(ticker) {
+  return fetchDataset('TaiwanStockInfo', ticker, defaultStartDate(1));
+}
+
+/** 取得月營收數據（預設抓 3 年） */
+export async function fetchMonthRevenue(ticker, startDate = defaultStartDate(3)) {
+  return fetchDataset('TaiwanStockMonthRevenue', ticker, startDate);
+}
+
+/** 取得資產負債表 */
+export async function fetchBalanceSheet(ticker, startDate = defaultStartDate()) {
+  return fetchDataset('TaiwanStockBalanceSheet', ticker, startDate);
 }
 
 /**
  * 一次並行抓取所有數據（減少等待時間）
- * @returns {{ price, financials, cashFlows, dividends, per }}
+ * @returns {{ price, financials, cashFlows, dividends, per, stockInfo, monthRevenue, balanceSheet }}
  */
 export async function fetchAllData(ticker) {
-  const [price, financials, cashFlows, dividends, per] = await Promise.all([
+  const [price, financials, cashFlows, dividends, per, stockInfo, monthRevenue, balanceSheet] = await Promise.all([
     fetchStockPrice(ticker),
     fetchFinancials(ticker),
     fetchCashFlows(ticker),
     fetchDividends(ticker),
     fetchPER(ticker),
+    fetchStockInfo(ticker),
+    fetchMonthRevenue(ticker),
+    fetchBalanceSheet(ticker),
   ]);
 
   // 取得最新收盤價
   const latestPrice = price.length > 0
     ? parseFloat(price[price.length - 1].close)
     : 0;
+
+  // stockInfo 取第一筆（通常只有一筆基本資料）
+  const stockInfoRecord = stockInfo.length > 0 ? stockInfo[0] : null;
 
   return {
     ticker,
@@ -90,5 +123,8 @@ export async function fetchAllData(ticker) {
     cashFlows,
     dividends,
     per,
+    stockInfo: stockInfoRecord,
+    monthRevenue,
+    balanceSheet,
   };
 }

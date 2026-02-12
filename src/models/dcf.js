@@ -2,99 +2,9 @@
 // 重構自 n8n_nodes/dcf_valuation_logic.js，移除 n8n 依賴
 // 改為純函式，接收結構化數據，輸出結構化結果
 
-import { DCF_CONFIG, getWACC, getSector } from '../config.js';
-
-/**
- * 從 FinMind 財報數據中提取指定 type 的年度數值
- * 回傳按日期降序排列的 { date, value } 陣列
- */
-function extractByType(records, type) {
-  return records
-    .filter(d => d.type === type)
-    .map(d => ({ date: d.date, value: parseFloat(d.value) }))
-    .sort((a, b) => new Date(b.date) - new Date(a.date));
-}
-
-/**
- * 取得最新一筆的 value（若無則回傳 fallback）
- */
-function latestValue(records, type, fallback = 0) {
-  const items = extractByType(records, type);
-  return items.length > 0 ? items[0].value : fallback;
-}
-
-/**
- * 計算 CAGR（複合年增長率）
- * @param {number[]} values - 按時間降序排列的值（[最新, ..., 最舊]）
- * @param {number} years - 跨越年數
- */
-function calcCAGR(values, years) {
-  if (values.length < 2 || years <= 0) return null;
-  const latest = values[0];
-  const oldest = values[values.length - 1];
-  if (oldest <= 0 || latest <= 0) return null;
-  return Math.pow(latest / oldest, 1 / years) - 1;
-}
-
-/**
- * 從累計式 YTD 現金流資料中提取年度數值
- * FinMind 現金流量表為累計 YTD：Q1, Q1+Q2, Q1+Q2+Q3, Full Year (Q4/12月)
- * 回傳年度值，按年份降序排列
- */
-function extractAnnualCashFlow(records, type) {
-  const filtered = records
-    .filter(d => d.type === type)
-    .map(d => ({ date: d.date, value: parseFloat(d.value) }));
-
-  const byYear = {};
-  for (const d of filtered) {
-    const year = d.date.slice(0, 4);
-    if (!byYear[year]) byYear[year] = [];
-    byYear[year].push(d);
-  }
-
-  const annuals = [];
-  for (const [year, entries] of Object.entries(byYear)) {
-    const sorted = entries.sort((a, b) => new Date(b.date) - new Date(a.date));
-    const latest = sorted[0];
-    const month = parseInt(latest.date.slice(5, 7));
-
-    if (month === 12) {
-      annuals.push({ year, value: latest.value, complete: true });
-    } else {
-      const quarterCount = Math.ceil(month / 3);
-      annuals.push({ year, value: latest.value * (4 / quarterCount), complete: false });
-    }
-  }
-
-  return annuals.sort((a, b) => b.year.localeCompare(a.year));
-}
-
-/**
- * 將單季財報資料彙整為年度總計
- * FinMind 損益表為單季數據，需要加總 4 季為年度值
- * 回傳按年份降序排列
- */
-function aggregateAnnualFinancials(records, type) {
-  const filtered = records
-    .filter(d => d.type === type)
-    .map(d => ({ date: d.date, value: parseFloat(d.value) }));
-
-  const byYear = {};
-  for (const d of filtered) {
-    const year = d.date.slice(0, 4);
-    if (!byYear[year]) byYear[year] = [];
-    byYear[year].push(d.value);
-  }
-
-  const annuals = [];
-  for (const [year, values] of Object.entries(byYear)) {
-    const sum = values.reduce((s, v) => s + v, 0);
-    annuals.push({ year, value: sum, quarters: values.length });
-  }
-
-  return annuals.sort((a, b) => b.year.localeCompare(a.year));
-}
+import { DCF_CONFIG, SECTOR_GROWTH_CAP, getWACC, getSector } from '../config.js';
+import { calcGrowthAdjustment } from './momentum.js';
+import { calcCAGR, extractAnnualCashFlow, aggregateAnnualFinancials, round, estimateSharesOutstanding } from './utils.js';
 
 /**
  * DCF 估值主函式
@@ -107,17 +17,22 @@ function aggregateAnnualFinancials(records, type) {
  * @param {object} [params.overrides] - 可覆寫的參數（wacc, growthRate 等）
  * @returns {object} DCFResult
  */
-export function calculateDCF({ ticker, financials, cashFlows, currentPrice, overrides = {} }) {
-  const wacc = overrides.wacc ?? getWACC(ticker);
-  const sector = getSector(ticker);
+export function calculateDCF({ ticker, financials, cashFlows, currentPrice, momentum = null, stockInfo = null, overrides = {} }) {
+  const sector = getSector(ticker, stockInfo);
+  const wacc = overrides.wacc ?? getWACC(ticker, sector);
+  const sectorGrowthCap = SECTOR_GROWTH_CAP[sector] ?? SECTOR_GROWTH_CAP['default'] ?? 0.30;
   const {
     terminalGrowthRate,
     projectionYears,
-    maxGrowthRate,
+    highGrowthYears,
+    decayYears,
+    matureGrowthRate,
     minGrowthRate,
     marginOfSafety,
     taxRate,
   } = { ...DCF_CONFIG, ...overrides };
+  // 使用產業成長率上限（週期性 10%，一般 30%）
+  const maxGrowthRate = overrides.maxGrowthRate ?? sectorGrowthCap;
 
   // ── 1. 提取 FCF 基礎數據（年度值） ──
   // 現金流為累計 YTD，需取完整年度（Q4/12月）或年化
@@ -146,6 +61,20 @@ export function calculateDCF({ ticker, financials, cashFlows, currentPrice, over
     fcfMethod = 'NOPAT 估算 (營業利益 × (1-稅率) - 資本支出)';
   }
 
+  // ── 週期性產業 FCF 正規化：使用 5 年平均 FCF ──
+  if (sector === '週期性' && annualOpCF.length >= 3) {
+    const annualFCFs = [];
+    for (const yearEntry of annualOpCF.slice(0, 5)) {
+      const matchCapEx = annualCapEx.find(c => c.year === yearEntry.year);
+      const yearFCF = yearEntry.value - Math.abs(matchCapEx?.value || 0);
+      annualFCFs.push(yearFCF);
+    }
+    if (annualFCFs.length >= 3) {
+      fcfBase = annualFCFs.reduce((s, v) => s + v, 0) / annualFCFs.length;
+      fcfMethod = `${annualFCFs.length}年平均 FCF（週期性正規化）`;
+    }
+  }
+
   // ── 2. 成長率估算（使用年度匯總數據） ──
   // 營收 CAGR（將單季數據彙整為年度）
   const annualRevenues = aggregateAnnualFinancials(financials, 'Revenue');
@@ -170,60 +99,58 @@ export function calculateDCF({ ticker, financials, cashFlows, currentPrice, over
     epsCAGR = calcCAGR(epsValues.slice(0, yearSpan + 1), yearSpan);
   }
 
-  // 取兩者較保守的值（若都無，用預設 5%）
+  // V3：加權平均（營收 70% + EPS 30%），取代 V2 的保守取低
   let growthRate;
   if (revCAGR !== null && epsCAGR !== null) {
-    growthRate = Math.min(revCAGR, epsCAGR); // 保守取低
+    growthRate = revCAGR * 0.7 + epsCAGR * 0.3;
   } else {
     growthRate = revCAGR ?? epsCAGR ?? 0.05;
   }
 
-  // 限制範圍
+  // V3：月營收動能調整
+  const annualCAGR = growthRate;
+  const growthAdj = calcGrowthAdjustment(momentum, annualCAGR);
+  growthRate += growthAdj;
+
+  // 限制範圍（週期性產業上限 10%，一般 30%）
   growthRate = Math.max(minGrowthRate, Math.min(maxGrowthRate, growthRate));
 
   // ── 3. 流通股數推算 ──
-  const netIncome = latestValue(financials, 'IncomeAfterTaxes');
-  const eps = latestValue(financials, 'EPS');
-
-  let sharesOutstanding;
-  let sharesMethod;
-  if (eps !== 0 && netIncome !== 0) {
-    // FinMind 的 IncomeAfterTaxes 單位是千元，EPS 是元
-    // sharesOutstanding = (netIncome * 1000) / eps 會得到股數
-    // 但實際上 FinMind 的 value 可能已經是完整數值
-    // 先用 netIncome / eps，再檢查合理性
-    const rawShares = Math.abs(netIncome / eps);
-
-    // 合理性檢查：台股一般流通股數在 1 億 ~ 300 億之間
-    if (rawShares > 1e7 && rawShares < 3e11) {
-      sharesOutstanding = rawShares;
-      sharesMethod = '稅後淨利 / EPS';
-    } else {
-      // 可能單位不同，嘗試千元轉換
-      const adjusted = Math.abs((netIncome * 1000) / eps);
-      if (adjusted > 1e7 && adjusted < 3e11) {
-        sharesOutstanding = adjusted;
-        sharesMethod = '稅後淨利(千元) / EPS';
-      } else {
-        sharesOutstanding = 1e9;
-        sharesMethod = '預設值 (10億股)';
-      }
-    }
+  const sharesResult = estimateSharesOutstanding(financials);
+  let sharesOutstanding, sharesMethod;
+  if (sharesResult) {
+    sharesOutstanding = sharesResult.shares;
+    sharesMethod = sharesResult.method;
   } else {
     sharesOutstanding = 1e9;
     sharesMethod = '預設值 (10億股)';
   }
 
-  // ── 4. DCF 現金流預測 ──
+  // ── 4. DCF 多階段現金流預測 ──
   const projections = [];
   let sumPV = 0;
+  let prevFCF = fcfBase;
+  const growthPhases = [];
 
   for (let i = 1; i <= projectionYears; i++) {
-    const projectedFCF = fcfBase * Math.pow(1 + growthRate, i);
+    let yearGrowth;
+    let phase;
+    if (i <= highGrowthYears) {
+      yearGrowth = growthRate;
+      phase = '高成長期';
+    } else {
+      // 線性衰退：從 growthRate → matureGrowthRate
+      const decayStep = (i - highGrowthYears) / decayYears;
+      yearGrowth = growthRate - (growthRate - matureGrowthRate) * decayStep;
+      phase = '衰退期';
+    }
+    const projectedFCF = prevFCF * (1 + yearGrowth);
     const discountFactor = Math.pow(1 + wacc, i);
     const pv = projectedFCF / discountFactor;
-    projections.push({ year: i, fcf: projectedFCF, pv });
+    projections.push({ year: i, fcf: projectedFCF, pv, growth: round(yearGrowth * 100), phase });
+    growthPhases.push({ year: i, growth: round(yearGrowth * 100), phase });
     sumPV += pv;
+    prevFCF = projectedFCF;
   }
 
   // ── 5. 終端價值（Gordon Growth Model）──
@@ -261,6 +188,7 @@ export function calculateDCF({ ticker, financials, cashFlows, currentPrice, over
       growthRate: round(growthRate * 100),
       revCAGR: revCAGR !== null ? round(revCAGR * 100) : null,
       epsCAGR: epsCAGR !== null ? round(epsCAGR * 100) : null,
+      momentumAdjustment: growthAdj !== 0 ? round(growthAdj * 100) : null,
       wacc: round(wacc * 100),
       terminalGrowthRate: round(terminalGrowthRate * 100),
       projectionYears,
@@ -269,6 +197,10 @@ export function calculateDCF({ ticker, financials, cashFlows, currentPrice, over
       terminalValuePV: round(terminalValuePV),
       terminalRatio: round(terminalRatio),
       terminalWarning,
+      growthPhases,
+      highGrowthYears,
+      decayYears,
+      matureGrowthRate: round(matureGrowthRate * 100),
       sumProjectedPV: round(sumPV),
       totalEnterpriseValue: round(totalPV),
       projections,
@@ -276,6 +208,3 @@ export function calculateDCF({ ticker, financials, cashFlows, currentPrice, over
   };
 }
 
-function round(n, d = 2) {
-  return Math.round(n * 10 ** d) / 10 ** d;
-}

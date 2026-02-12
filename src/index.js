@@ -8,6 +8,10 @@ import { writeFileSync } from 'node:fs';
 import { fetchAllData } from './api/finmind.js';
 import { calculateDCF } from './models/dcf.js';
 import { analyzeDividend } from './models/dividend.js';
+import { analyzePER } from './models/per.js';
+import { analyzePBR } from './models/pbr.js';
+import { analyzeCapEx } from './models/capex.js';
+import { analyzeRevenueMomentum } from './models/momentum.js';
 import { synthesize } from './report/synthesizer.js';
 import { toJSON, toMarkdown, toTerminal } from './report/formatters.js';
 
@@ -40,6 +44,12 @@ async function main() {
     process.exit(1);
   }
 
+  // 驗證 ticker 格式（台股代號為 4-6 位數字）
+  if (!/^\d{4,6}$/.test(ticker)) {
+    console.error(`❌ 無效的股票代號格式: ${ticker}（應為 4-6 位數字，如 2330）`);
+    process.exit(1);
+  }
+
   console.error(`\n⏳ 正在分析 ${ticker}...\n`);
 
   // ── Step 1: 抓取所有數據（並行） ──
@@ -57,36 +67,101 @@ async function main() {
     console.error('❌ 無法取得股價數據，請確認股票代號是否正確');
     process.exit(1);
   }
-  console.error(`   股價: ${data.latestPrice} 元 | 財報: ${data.financials.length} 筆 | 現金流: ${data.cashFlows.length} 筆 | 股利: ${data.dividends.length} 筆`);
+  console.error(`   股價: ${data.latestPrice} 元 | 財報: ${data.financials.length} 筆 | 現金流: ${data.cashFlows.length} 筆 | 股利: ${data.dividends.length} 筆 | PER: ${data.per.length} 筆`);
+  if (data.stockInfo) console.error(`   產業: ${data.stockInfo.industry_category || data.stockInfo.Industry_category || '未知'}`);
+  console.error(`   月營收: ${data.monthRevenue.length} 筆 | 資產負債表: ${data.balanceSheet.length} 筆`);
 
-  // ── Step 2: 並行執行雙模型 ──
+  // ── Step 2: 營收動能分析 ──
+  console.error('📈 分析營收動能...');
+  const momentum = analyzeRevenueMomentum({ monthRevenue: data.monthRevenue });
+
+  // ── Step 3: 並行執行五模型 ──
   console.error('🔬 執行估值模型...');
 
-  const dcfResult = calculateDCF({
-    ticker,
-    financials: data.financials,
-    cashFlows: data.cashFlows,
-    currentPrice: data.latestPrice,
-  });
+  let dcfResult;
+  try {
+    dcfResult = calculateDCF({
+      ticker,
+      financials: data.financials,
+      cashFlows: data.cashFlows,
+      currentPrice: data.latestPrice,
+      momentum,
+      stockInfo: data.stockInfo,
+    });
+  } catch (err) {
+    console.error(`⚠️ DCF 模型執行失敗: ${err.message}`);
+    dcfResult = { ticker, fairValue: 0, upside: 0, signal: 'N/A', sector: '未知', details: { growthRate: 0, wacc: 0, fcfBase: 0, sharesMethod: 'N/A', terminalWarning: null, growthPhases: [], momentumAdjustment: null } };
+  }
 
-  const dividendResult = analyzeDividend({
-    ticker,
-    dividends: data.dividends,
-    priceHistory: data.priceHistory,
-    financials: data.financials,
-    currentPrice: data.latestPrice,
-  });
+  let dividendResult;
+  try {
+    dividendResult = analyzeDividend({
+      ticker,
+      dividends: data.dividends,
+      priceHistory: data.priceHistory,
+      financials: data.financials,
+      currentPrice: data.latestPrice,
+    });
+  } catch (err) {
+    console.error(`⚠️ 股利模型執行失敗: ${err.message}`);
+    dividendResult = { ticker, available: false, reason: `模型錯誤: ${err.message}` };
+  }
 
-  // ── Step 3: 綜合判斷 ──
+  let perResult;
+  try {
+    perResult = analyzePER({
+      ticker,
+      per: data.per,
+      financials: data.financials,
+      currentPrice: data.latestPrice,
+    });
+  } catch (err) {
+    console.error(`⚠️ PER 模型執行失敗: ${err.message}`);
+    perResult = { ticker, available: false, reason: `模型錯誤: ${err.message}` };
+  }
+
+  let pbrResult;
+  try {
+    pbrResult = analyzePBR({
+      ticker,
+      per: data.per,
+      balanceSheet: data.balanceSheet,
+      financials: data.financials,
+      currentPrice: data.latestPrice,
+    });
+  } catch (err) {
+    console.error(`⚠️ PBR 模型執行失敗: ${err.message}`);
+    pbrResult = { ticker, available: false, reason: `模型錯誤: ${err.message}` };
+  }
+
+  let capexResult;
+  try {
+    capexResult = analyzeCapEx({
+      ticker,
+      financials: data.financials,
+      cashFlows: data.cashFlows,
+      per: perResult,
+      currentPrice: data.latestPrice,
+    });
+  } catch (err) {
+    console.error(`⚠️ CapEx 模型執行失敗: ${err.message}`);
+    capexResult = { available: false, reason: `模型錯誤: ${err.message}` };
+  }
+
+  // ── Step 4: 綜合判斷 ──
   console.error('📊 綜合分析中...');
   const report = synthesize({
     dcf: dcfResult,
     dividend: dividendResult,
+    per: perResult,
+    pbr: pbrResult,
+    capex: capexResult,
+    momentum,
     ticker,
     currentPrice: data.latestPrice,
   });
 
-  // ── Step 4: 格式化輸出 ──
+  // ── Step 5: 格式化輸出 ──
   const formatters = { json: toJSON, md: toMarkdown, terminal: toTerminal };
   const formatter = formatters[format];
   if (!formatter) {

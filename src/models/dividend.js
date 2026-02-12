@@ -2,6 +2,7 @@
 // 三大維度：殖利率河流圖、配息安全性、配息穩定性
 
 import { DIVIDEND_CONFIG } from '../config.js';
+import { round, mean, stddev } from './utils.js';
 
 /**
  * 股利分析主函式
@@ -333,19 +334,4 @@ function buildAveragePriceByYear(priceHistory) {
     result[year] = mean(prices);
   }
   return result;
-}
-
-function mean(arr) {
-  return arr.length === 0 ? 0 : arr.reduce((s, v) => s + v, 0) / arr.length;
-}
-
-function stddev(arr) {
-  if (arr.length < 2) return 0;
-  const m = mean(arr);
-  const variance = arr.reduce((s, v) => s + (v - m) ** 2, 0) / (arr.length - 1);
-  return Math.sqrt(variance);
-}
-
-function round(n, d = 2) {
-  return Math.round(n * 10 ** d) / 10 ** d;
 }
