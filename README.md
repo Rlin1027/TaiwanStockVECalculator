@@ -1,6 +1,6 @@
 # TaiwanStockVECalculator
 
-台股七模型估值分析系統 — 基於 FinMind API 的多維度量化估值工具，支援 HTTP API 微服務 + n8n 自動化工作流 + LLM 智慧分類
+台股七模型估值分析系統 — 基於 FinMind API 的多維度量化估值工具，支援 HTTP API 微服務 + n8n 自動化工作流 + LLM 智慧分類 + 回測準確度驗證 + 智慧投組管理 + 警示推播
 
 ## 功能概述
 
@@ -44,13 +44,20 @@ src/
 ├── llm/
 │   ├── guardrails.js        # LLM 輸出驗證層（權重邊界、分類類型、模型可用性）
 │   └── resynthesize.js      # LLM 權重重新合成引擎
+├── backtest/
+│   ├── engine.js            # 回測引擎：漸進式股價比對 + 90d/180d 回填
+│   └── metrics.js           # 準確度指標：hit rate、MAE、模型排名
+├── portfolio/
+│   ├── analytics.js         # 投組分析：績效、產業配置、風險指標
+│   └── alerts.js            # 警示系統：價格/估值/分類變化觸發
 └── report/
     ├── synthesizer.js       # 七模型綜合引擎：分類、加權、建議、風險
     └── formatters.js        # 輸出格式化：Terminal / Markdown / JSON
 
 n8n_workflows/
-├── weekly-valuation.json    # 每週排程：批次分析 + LLM 分類 + Telegram/Email 通知
-└── on-demand-analysis.json  # 按需查詢：Webhook 觸發 + LLM 分類 + 即時回傳
+├── weekly-valuation.json    # 每週排程：批次分析 + LLM 分類 + 回測摘要 + 投組績效
+├── on-demand-analysis.json  # 按需查詢：Webhook 觸發 + LLM 分類 + 即時回傳
+└── daily-alerts.json        # 每日警示：收盤後檢查觸發條件 → Telegram 推播
 
 docs/
 └── n8n-setup-guide.md       # n8n 工作流匯入與設定指南
@@ -235,6 +242,20 @@ node src/server.js
 | GET | `/api/portfolio` | 取得追蹤清單 |
 | POST | `/api/portfolio` | 新增追蹤（body: `{"tickers": [...]}`) |
 | DELETE | `/api/portfolio/:ticker` | 移除追蹤 |
+| **回測驗證** | | |
+| POST | `/api/backtest/run` | 觸發回測掃描（比對歷史預測 vs 實際股價） |
+| GET | `/api/backtest/summary` | 聚合準確度統計（hit rate、MAE、模型排名） |
+| GET | `/api/backtest/:ticker` | 特定股票的回測紀錄與指標 |
+| **投組管理** | | |
+| GET | `/api/portfolio/holdings` | 取得所有持倉明細 |
+| PUT | `/api/portfolio/holdings/:ticker` | 新增/更新持倉（body: `{"shares", "costBasis", "notes"}`) |
+| DELETE | `/api/portfolio/holdings/:ticker` | 移除持倉 |
+| GET | `/api/portfolio/analytics` | 投組績效分析（配置、風險、估值摘要） |
+| **警示系統** | | |
+| GET | `/api/alerts` | 列出所有啟用中的警示 |
+| POST | `/api/alerts` | 建立警示（body: `{"ticker", "alertType", "threshold"}`) |
+| DELETE | `/api/alerts/:id` | 停用警示 |
+| POST | `/api/alerts/check` | 觸發一次警示檢查，回傳已觸發列表 |
 
 ### 使用範例
 
@@ -266,20 +287,98 @@ curl -X POST http://localhost:3000/api/resynthesize/2330 \
 curl -X POST http://localhost:3000/api/portfolio \
   -H "Content-Type: application/json" \
   -d '{"tickers": ["2330", "2884"]}'
+
+# === Phase 3: 回測 + 投組 + 警示 ===
+
+# 建立持倉
+curl -X PUT http://localhost:3000/api/portfolio/holdings/2330 \
+  -H "Content-Type: application/json" \
+  -d '{"shares": 100, "costBasis": 950, "notes": "長期持有"}'
+
+# 查看投組績效
+curl http://localhost:3000/api/portfolio/analytics
+
+# 觸發回測掃描
+curl -X POST http://localhost:3000/api/backtest/run \
+  -H "Content-Type: application/json" \
+  -d '{"minDaysAgo": 30}'
+
+# 查看回測摘要
+curl http://localhost:3000/api/backtest/summary
+
+# 建立價格警示
+curl -X POST http://localhost:3000/api/alerts \
+  -H "Content-Type: application/json" \
+  -d '{"ticker": "2330", "alertType": "price_above", "threshold": 1100}'
+
+# 檢查警示觸發
+curl -X POST http://localhost:3000/api/alerts/check
 ```
+
+## 回測準確度驗證
+
+系統會用 DB 中已儲存的歷史分析，比對實際後續股價，計算各模型和分類的準確度。
+
+### 運作方式
+
+1. **漸進式回測**：分析紀錄滿 30 天後自動納入回測，後續 90 天、180 天到期時回填更長期數據
+2. **方向正確性**：BUY 預測 → 股價上漲 = correct；SELL → 下跌 = correct；HOLD → 變化 < ±5% = correct
+3. **MAE（平均絕對誤差）**：`|預測合理價 - 實際價格| / 實際價格 × 100%`，用於評估預測精準度
+4. **模型排名**：依各模型的 MAE 由低到高排名，找出最準確的估值方法
+
+### 回測摘要結構
+
+```json
+{
+  "overall": { "hitRate30d": 72, "hitRate90d": 68, "avgMAE30d": 12.5 },
+  "byType": { "成長股": { "hitRate30d": 80, "count": 15 } },
+  "byModel": { "per": { "avgMAE30d": 8.3 } },
+  "leaderboard": [{ "rank": 1, "model": "per", "avgMAE": 8.3 }]
+}
+```
+
+## 智慧投組管理
+
+在原有追蹤清單之上，新增完整的持倉管理功能。
+
+### 投組分析指標
+
+| 類別 | 指標 | 說明 |
+|:-----|:-----|:-----|
+| 總覽 | totalValue / totalCost / unrealizedPnL | 總市值、總成本、未實現損益 |
+| 個股 | marketValue / pnl / weight | 各持倉市值、損益、佔比 |
+| 產業配置 | sectorAllocation | 各產業的市值佔比與持股數 |
+| 風險 | concentrationTop3 / sectorConcentration | 前 3 大持股集中度、最大產業佔比 |
+| 估值 | undervalued / overvalued / fairlyValued | 依 upside 分組的股票清單 |
+
+**無持股模式**：若 `shares = 0`（僅追蹤），仍顯示估值資訊但不計入投組價值。
+
+## 警示系統
+
+支援 4 種警示類型，搭配每日 Telegram 推播：
+
+| 類型 | 觸發條件 | 範例 |
+|:-----|:---------|:-----|
+| `price_above` | 現價 ≥ 閾值 | 台積電漲到 1100 通知我 |
+| `price_below` | 現價 ≤ 閾值 | 台積電跌到 900 通知我 |
+| `upside_above` | 潛在上漲空間 ≥ 閾值% | 當 upside 超過 30% 通知我 |
+| `classification_change` | 分類類型改變 | 從成長股變成存股時通知我 |
+
+警示檢查流程：取所有啟用警示 → 抓最新分析 + 當前股價 → 逐一檢查觸發條件 → 更新觸發時間 → 回傳觸發列表。
 
 ## n8n 自動化工作流
 
-系統提供兩個 n8n 工作流，實現完整的自動化估值分析管道：
+系統提供三個 n8n 工作流，實現完整的自動化估值分析管道：
 
 ### 每週估值報告 (`weekly-valuation.json`)
 
 ```
-Cron 每週日 09:00
+Cron 每週一 02:00
   → 取得追蹤清單 → 批次七模型分析
   → GPT-4o 智慧分類 + 權重分配
   → Guardrails 驗證 → LLM 權重重新加權
-  → Telegram 摘要 + Email 詳細報告
+  → 取得回測摘要 + 投組績效          ← Phase 3 新增
+  → Telegram 摘要（含回測 + 投組區塊）+ Email 詳細報告
 ```
 
 ### 按需查詢 (`on-demand-analysis.json`)
@@ -289,6 +388,16 @@ POST /webhook/analyze {"ticker": "2330"}
   → 七模型分析 → 歷史差異比較
   → GPT-4o 分類 → Guardrails 驗證
   → LLM 重新加權 → 即時回傳結果
+```
+
+### 每日警示推播 (`daily-alerts.json`)
+
+```
+Cron 每日 18:00（收盤後）
+  → POST /api/alerts/check
+  → 過濾已觸發的警示
+  → 格式化 Telegram 訊息（含觸發類型圖示）
+  → 有觸發才發送 Telegram 推播
 ```
 
 ### 設定指南
@@ -405,8 +514,11 @@ node src/batch-test.js 2330 2454 2317
 - **進度訊息與報告分離**：進度用 `stderr`、報告用 `stdout`，支援 pipe
 - **HTTP API 微服務**：Express + SQLite 持久化，支援單股/批次分析、歷史比較、追蹤清單
 - **LLM 智慧分類**：GPT-4o 動態分類 + 權重分配，Guardrails 雙層驗證確保安全回退
-- **n8n 工作流整合**：每週自動排程 + Webhook 按需查詢，Telegram/Email 通知
-- **零侵入式 LLM 增強**：LLM 僅重新加權，不修改任何原始計算邏輯，確定性結果完整保留
+- **n8n 工作流整合**：每週自動排程 + Webhook 按需查詢 + 每日警示推播，Telegram/Email 通知
+- **回測準確度驗證**：漸進式回測（30d/90d/180d），計算 hit rate、MAE、模型排名
+- **智慧投組管理**：持倉追蹤、產業配置、風險指標、估值分組，整合至週報
+- **警示推播系統**：4 種觸發條件（價格/估值/分類變化），每日 Telegram 自動通知
+- **零侵入式架構**：Phase 2-3 所有新功能透過新模組 + 新端點實現，不修改核心計算邏輯
 
 ## 限制與注意事項
 
