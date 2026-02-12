@@ -1,0 +1,383 @@
+{
+  "name": "Phase 3 投組管理 + 回測 + 警示",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "phase3",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-c000-000000000001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 400],
+      "webhookId": "phase3-management"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.body.action }}", "rightValue": "holdings_add", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "holdings_add" },
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.body.action }}", "rightValue": "holdings_remove", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "holdings_remove" },
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.body.action }}", "rightValue": "holdings_list", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "holdings_list" },
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.body.action }}", "rightValue": "analytics", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "analytics" },
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.body.action }}", "rightValue": "alert_add", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "alert_add" },
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.body.action }}", "rightValue": "alert_list", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "alert_list" },
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.body.action }}", "rightValue": "alert_check", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "alert_check" },
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.body.action }}", "rightValue": "alert_remove", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "alert_remove" },
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.body.action }}", "rightValue": "backtest_run", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "backtest_run" },
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.body.action }}", "rightValue": "backtest_summary", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "backtest_summary" },
+            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [{ "leftValue": "={{ $json.body.action }}", "rightValue": "backtest_ticker", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "backtest_ticker" }
+          ],
+          "fallbackOutput": {
+            "fallbackOutputType": "extra",
+            "outputKey": "unknown"
+          }
+        }
+      },
+      "id": "c1000000-0000-4000-c000-000000000002",
+      "name": "路由分發",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [300, 400]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $env.VALUATION_API_URL + '/api/portfolio/holdings/' + $('Webhook').first().json.body.ticker }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ shares: $('Webhook').first().json.body.shares || 0, costBasis: $('Webhook').first().json.body.costBasis || 0, notes: $('Webhook').first().json.body.notes || '' }) }}",
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-c000-000000000010",
+      "name": "新增持倉",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [600, -200]
+    },
+    {
+      "parameters": {
+        "method": "DELETE",
+        "url": "={{ $env.VALUATION_API_URL + '/api/portfolio/holdings/' + $('Webhook').first().json.body.ticker }}",
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-c000-000000000011",
+      "name": "移除持倉",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [600, -100]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.VALUATION_API_URL + '/api/portfolio/holdings' }}",
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-c000-000000000012",
+      "name": "列出持倉",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [600, 0]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.VALUATION_API_URL + '/api/portfolio/analytics' }}",
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-c000-000000000013",
+      "name": "投組分析",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [600, 100]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.VALUATION_API_URL + '/api/alerts' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ ticker: $('Webhook').first().json.body.ticker, alertType: $('Webhook').first().json.body.alertType, threshold: $('Webhook').first().json.body.threshold }) }}",
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-c000-000000000014",
+      "name": "建立警示",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [600, 250]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.VALUATION_API_URL + '/api/alerts' }}",
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-c000-000000000015",
+      "name": "列出警示",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [600, 350]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.VALUATION_API_URL + '/api/alerts/check' }}",
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-c000-000000000016",
+      "name": "檢查警示",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [600, 450]
+    },
+    {
+      "parameters": {
+        "method": "DELETE",
+        "url": "={{ $env.VALUATION_API_URL + '/api/alerts/' + $('Webhook').first().json.body.alertId }}",
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-c000-000000000017",
+      "name": "停用警示",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [600, 550]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.VALUATION_API_URL + '/api/backtest/run' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ minDaysAgo: $('Webhook').first().json.body.minDaysAgo || 30, maxResults: $('Webhook').first().json.body.maxResults || 100 }) }}",
+        "options": { "timeout": 120000 }
+      },
+      "id": "c1000000-0000-4000-c000-000000000018",
+      "name": "執行回測",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [600, 700]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.VALUATION_API_URL + '/api/backtest/summary' }}",
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-c000-000000000019",
+      "name": "回測摘要",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [600, 800]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.VALUATION_API_URL + '/api/backtest/' + $('Webhook').first().json.body.ticker }}",
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-c000-000000000020",
+      "name": "個股回測",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [600, 900]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { error: 'Unknown action', message: '支援的 action: holdings_add, holdings_remove, holdings_list, analytics, alert_add, alert_list, alert_check, alert_remove, backtest_run, backtest_summary, backtest_ticker', received: $('Webhook').first().json.body.action } }];"
+      },
+      "id": "c1000000-0000-4000-c000-000000000021",
+      "name": "未知動作",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 1050]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($input.first().json) }}",
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-c000-000000000030",
+      "name": "回應 holdings_add",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [900, -200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($input.first().json) }}",
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-c000-000000000031",
+      "name": "回應 holdings_remove",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [900, -100]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($input.first().json) }}",
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-c000-000000000032",
+      "name": "回應 holdings_list",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [900, 0]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($input.first().json) }}",
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-c000-000000000033",
+      "name": "回應 analytics",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [900, 100]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($input.first().json) }}",
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-c000-000000000034",
+      "name": "回應 alert_add",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [900, 250]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($input.first().json) }}",
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-c000-000000000035",
+      "name": "回應 alert_list",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [900, 350]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($input.first().json) }}",
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-c000-000000000036",
+      "name": "回應 alert_check",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [900, 450]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($input.first().json) }}",
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-c000-000000000037",
+      "name": "回應 alert_remove",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [900, 550]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($input.first().json) }}",
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-c000-000000000038",
+      "name": "回應 backtest_run",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [900, 700]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($input.first().json) }}",
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-c000-000000000039",
+      "name": "回應 backtest_summary",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [900, 800]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($input.first().json) }}",
+        "options": {}
+      },
+      "id": "c1000000-0000-4000-c000-000000000040",
+      "name": "回應 backtest_ticker",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [900, 900]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($input.first().json) }}",
+        "options": { "responseCode": 400 }
+      },
+      "id": "c1000000-0000-4000-c000-000000000041",
+      "name": "回應 unknown",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [900, 1050]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[{ "node": "路由分發", "type": "main", "index": 0 }]]
+    },
+    "路由分發": {
+      "main": [
+        [{ "node": "新增持倉", "type": "main", "index": 0 }],
+        [{ "node": "移除持倉", "type": "main", "index": 0 }],
+        [{ "node": "列出持倉", "type": "main", "index": 0 }],
+        [{ "node": "投組分析", "type": "main", "index": 0 }],
+        [{ "node": "建立警示", "type": "main", "index": 0 }],
+        [{ "node": "列出警示", "type": "main", "index": 0 }],
+        [{ "node": "檢查警示", "type": "main", "index": 0 }],
+        [{ "node": "停用警示", "type": "main", "index": 0 }],
+        [{ "node": "執行回測", "type": "main", "index": 0 }],
+        [{ "node": "回測摘要", "type": "main", "index": 0 }],
+        [{ "node": "個股回測", "type": "main", "index": 0 }],
+        [{ "node": "未知動作", "type": "main", "index": 0 }]
+      ]
+    },
+    "新增持倉": { "main": [[{ "node": "回應 holdings_add", "type": "main", "index": 0 }]] },
+    "移除持倉": { "main": [[{ "node": "回應 holdings_remove", "type": "main", "index": 0 }]] },
+    "列出持倉": { "main": [[{ "node": "回應 holdings_list", "type": "main", "index": 0 }]] },
+    "投組分析": { "main": [[{ "node": "回應 analytics", "type": "main", "index": 0 }]] },
+    "建立警示": { "main": [[{ "node": "回應 alert_add", "type": "main", "index": 0 }]] },
+    "列出警示": { "main": [[{ "node": "回應 alert_list", "type": "main", "index": 0 }]] },
+    "檢查警示": { "main": [[{ "node": "回應 alert_check", "type": "main", "index": 0 }]] },
+    "停用警示": { "main": [[{ "node": "回應 alert_remove", "type": "main", "index": 0 }]] },
+    "執行回測": { "main": [[{ "node": "回應 backtest_run", "type": "main", "index": 0 }]] },
+    "回測摘要": { "main": [[{ "node": "回應 backtest_summary", "type": "main", "index": 0 }]] },
+    "個股回測": { "main": [[{ "node": "回應 backtest_ticker", "type": "main", "index": 0 }]] },
+    "未知動作": { "main": [[{ "node": "回應 unknown", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Taipei"
+  },
+  "versionId": "1",
+  "meta": { "instanceId": "" },
+  "tags": []
+}
