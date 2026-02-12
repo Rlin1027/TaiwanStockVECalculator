@@ -7,12 +7,17 @@
   "scripts": {
     "start": "node src/index.js",
     "analyze": "node src/index.js",
+    "server": "node src/server.js",
+    "start:api": "node src/server.js",
     "test:qa": "node src/qa-test.js",
     "test:batch": "node src/batch-test.js"
   },
   "keywords": ["taiwan-stock", "dcf", "dividend", "finmind", "valuation"],
   "license": "MIT",
   "dependencies": {
-    "dotenv": "^16.4.0"
+    "better-sqlite3": "^11.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.0",
+    "express": "^4.21.0"
   }
 }

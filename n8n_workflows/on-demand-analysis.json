@@ -1,0 +1,98 @@
+{
+  "name": "按需單股估值查詢",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "analyze",
+        "options": {
+          "responseMode": "responseNode"
+        }
+      },
+      "id": "b2c3d4e5-2222-4000-b000-000000000001",
+      "name": "Webhook 接收查詢",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 300],
+      "webhookId": "analyze"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 驗證 ticker 格式\nconst ticker = $input.first().json.body?.ticker || $input.first().json.ticker;\n\nif (!ticker) {\n  throw new Error('缺少 ticker 參數。請提供股票代碼，例如 { \"ticker\": \"2330\" }');\n}\n\nconst tickerStr = String(ticker).trim();\n\nif (!/^\\d{4,6}$/.test(tickerStr)) {\n  throw new Error(`無效的股票代碼格式：「${tickerStr}」。股票代碼必須為 4-6 位數字。`);\n}\n\nreturn [{ json: { ticker: tickerStr } }];"
+      },
+      "id": "b2c3d4e5-2222-4000-b000-000000000002",
+      "name": "驗證 Ticker 格式",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.VALUATION_API_URL + '/api/analyze/' + $json.ticker }}",
+        "options": {}
+      },
+      "id": "b2c3d4e5-2222-4000-b000-000000000003",
+      "name": "呼叫估值 API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "b2c3d4e5-2222-4000-b000-000000000004",
+      "name": "回傳分析結果",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [750, 300]
+    }
+  ],
+  "connections": {
+    "Webhook 接收查詢": {
+      "main": [
+        [
+          {
+            "node": "驗證 Ticker 格式",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "驗證 Ticker 格式": {
+      "main": [
+        [
+          {
+            "node": "呼叫估值 API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "呼叫估值 API": {
+      "main": [
+        [
+          {
+            "node": "回傳分析結果",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1",
+  "meta": {
+    "instanceId": ""
+  },
+  "tags": []
+}

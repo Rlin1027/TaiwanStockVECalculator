@@ -1,0 +1,13 @@
+node_modules
+npm-debug.log
+output/
+dexter_analysis/
+.env
+.env.*
+.git
+.gitignore
+.omc/
+n8n_workflows/
+*.md
+scripts/
+n8n_nodes/

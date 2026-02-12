@@ -1,0 +1,17 @@
+version: '3.8'
+services:
+  valuation-api:
+    build: .
+    container_name: n8nfinmind-api
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - FINMIND_API_TOKEN=${FINMIND_API_TOKEN}
+      - API_KEY=${API_KEY:-}
+      - DB_PATH=/app/data/valuation.db
+      - PORT=3000
+      - BATCH_DELAY_MS=${BATCH_DELAY_MS:-3000}
+      - BATCH_SIZE=${BATCH_SIZE:-10}
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

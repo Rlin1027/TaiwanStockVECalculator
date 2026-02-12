@@ -1,0 +1,253 @@
+{
+  "name": "每週台股估值排程",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 2,
+              "triggerAtDay": 1
+            }
+          ]
+        }
+      },
+      "id": "a1b2c3d4-1111-4000-a000-000000000001",
+      "name": "每週一 02:00 觸發",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.VALUATION_API_URL + '/api/portfolio' }}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-1111-4000-a000-000000000002",
+      "name": "取得追蹤清單",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "batchSize": 10,
+        "options": {}
+      },
+      "id": "a1b2c3d4-1111-4000-a000-000000000003",
+      "name": "分批處理",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.VALUATION_API_URL + '/api/analyze/batch' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ tickers: $input.all().map(item => item.json.ticker || item.json) }) }}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-1111-4000-a000-000000000004",
+      "name": "批次估值分析",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [750, 300]
+    },
+    {
+      "parameters": {
+        "amount": 30,
+        "unit": "seconds"
+      },
+      "id": "a1b2c3d4-1111-4000-a000-000000000005",
+      "name": "等待 30 秒",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1000, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 合併所有批次結果並產生摘要統計\nconst allResults = [];\n\nfor (const item of $input.all()) {\n  const data = item.json;\n  if (data.results && Array.isArray(data.results)) {\n    allResults.push(...data.results);\n  } else if (data.ticker) {\n    allResults.push(data);\n  }\n}\n\nconst now = new Date();\nconst dateStr = `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')}`;\n\nconst buyStocks = allResults.filter(r => r.recommendation === 'BUY' || r.recommendation === 'STRONG_BUY');\nconst sellStocks = allResults.filter(r => r.recommendation === 'SELL' || r.recommendation === 'STRONG_SELL');\nconst holdStocks = allResults.filter(r => r.recommendation === 'HOLD');\n\n// 依 upside 排序\nbuyStocks.sort((a, b) => (b.upside || 0) - (a.upside || 0));\n\nreturn [{\n  json: {\n    date: dateStr,\n    totalStocks: allResults.length,\n    buyCount: buyStocks.length,\n    sellCount: sellStocks.length,\n    holdCount: holdStocks.length,\n    buyStocks: buyStocks,\n    sellStocks: sellStocks,\n    holdStocks: holdStocks,\n    allResults: allResults,\n    top5Buy: buyStocks.slice(0, 5)\n  }\n}];"
+      },
+      "id": "a1b2c3d4-1111-4000-a000-000000000006",
+      "name": "合併結果與統計",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 產生 Telegram 訊息格式\nconst data = $input.first().json;\n\nlet msg = `\\u{1F4CA} 台股估值週報 — ${data.date}\\n`;\nmsg += `分析股數：${data.totalStocks} 檔\\n\\n`;\n\n// 買入推薦\nmsg += `\\u{1F7E2} 買入推薦（${data.buyCount} 檔）\\n`;\nif (data.top5Buy && data.top5Buy.length > 0) {\n  for (const stock of data.top5Buy) {\n    const ticker = stock.ticker || '----';\n    const name = stock.name || '';\n    const fairValue = stock.fairValue ? stock.fairValue.toFixed(1) : 'N/A';\n    const upside = stock.upside ? stock.upside.toFixed(1) : 'N/A';\n    msg += `  ${ticker} ${name} | 目標價 ${fairValue} | 上漲空間 ${upside}%\\n`;\n  }\n  if (data.buyCount > 5) {\n    msg += `  ...及其他 ${data.buyCount - 5} 檔\\n`;\n  }\n} else {\n  msg += `  本週無買入推薦\\n`;\n}\n\nmsg += `\\n`;\n\n// 警示股票\nmsg += `\\u{1F534} 警示股票（${data.sellCount} 檔）\\n`;\nif (data.sellStocks && data.sellStocks.length > 0) {\n  for (const stock of data.sellStocks) {\n    const ticker = stock.ticker || '----';\n    const name = stock.name || '';\n    const reason = stock.riskReason || stock.recommendation || 'SELL';\n    msg += `  ${ticker} ${name}: ${reason}\\n`;\n  }\n} else {\n  msg += `  本週無警示股票\\n`;\n}\n\nmsg += `\\n\\u{1F4C8} 詳細報告已發送至 Email`;\n\nreturn [{ json: { telegramMessage: msg } }];"
+      },
+      "id": "a1b2c3d4-1111-4000-a000-000000000007",
+      "name": "產生 Telegram 訊息",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1500, 150]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 產生 Gmail HTML 報告\nconst data = $input.first().json;\n\nconst getColor = (rec) => {\n  if (rec === 'STRONG_BUY') return '#006400';\n  if (rec === 'BUY') return '#228B22';\n  if (rec === 'HOLD') return '#B8860B';\n  if (rec === 'SELL') return '#DC143C';\n  if (rec === 'STRONG_SELL') return '#8B0000';\n  return '#333';\n};\n\nconst getBgColor = (rec) => {\n  if (rec === 'STRONG_BUY' || rec === 'BUY') return '#f0fff0';\n  if (rec === 'HOLD') return '#fffef0';\n  if (rec === 'SELL' || rec === 'STRONG_SELL') return '#fff0f0';\n  return '#fff';\n};\n\nlet html = `\n<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n<style>\n  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; color: #333; }\n  .container { max-width: 800px; margin: 0 auto; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }\n  .header { background: linear-gradient(135deg, #1a237e, #283593); color: white; padding: 24px; }\n  .header h1 { margin: 0 0 8px 0; font-size: 22px; }\n  .header p { margin: 0; opacity: 0.9; font-size: 14px; }\n  .summary { display: flex; padding: 16px 24px; gap: 16px; border-bottom: 1px solid #eee; flex-wrap: wrap; }\n  .summary-card { flex: 1; min-width: 120px; text-align: center; padding: 12px; border-radius: 8px; background: #f8f9fa; }\n  .summary-card .number { font-size: 28px; font-weight: bold; }\n  .summary-card .label { font-size: 12px; color: #666; margin-top: 4px; }\n  .buy .number { color: #228B22; }\n  .hold .number { color: #B8860B; }\n  .sell .number { color: #DC143C; }\n  .section { padding: 16px 24px; }\n  .section h2 { font-size: 16px; border-bottom: 2px solid #1a237e; padding-bottom: 8px; }\n  table { width: 100%; border-collapse: collapse; font-size: 13px; }\n  th { background: #f8f9fa; padding: 10px 8px; text-align: left; font-weight: 600; border-bottom: 2px solid #dee2e6; }\n  td { padding: 10px 8px; border-bottom: 1px solid #eee; }\n  tr:hover { background: #f8f9fa; }\n  .rec-badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; color: white; }\n  .footer { padding: 16px 24px; background: #f8f9fa; text-align: center; font-size: 12px; color: #999; }\n  @media (max-width: 600px) {\n    body { padding: 8px; }\n    .summary { flex-direction: column; }\n    table { font-size: 11px; }\n    td, th { padding: 6px 4px; }\n  }\n</style>\n</head>\n<body>\n<div class=\"container\">\n  <div class=\"header\">\n    <h1>台股估值週報</h1>\n    <p>${data.date} | 七模型綜合估值分析</p>\n  </div>\n  <div class=\"summary\">\n    <div class=\"summary-card\">\n      <div class=\"number\">${data.totalStocks}</div>\n      <div class=\"label\">分析股數</div>\n    </div>\n    <div class=\"summary-card buy\">\n      <div class=\"number\">${data.buyCount}</div>\n      <div class=\"label\">買入推薦</div>\n    </div>\n    <div class=\"summary-card hold\">\n      <div class=\"number\">${data.holdCount}</div>\n      <div class=\"label\">持有觀望</div>\n    </div>\n    <div class=\"summary-card sell\">\n      <div class=\"number\">${data.sellCount}</div>\n      <div class=\"label\">賣出警示</div>\n    </div>\n  </div>\n  <div class=\"section\">\n    <h2>估值總覽</h2>\n    <table>\n      <thead>\n        <tr>\n          <th>代碼</th>\n          <th>名稱</th>\n          <th>現價</th>\n          <th>合理價</th>\n          <th>上漲空間</th>\n          <th>建議</th>\n        </tr>\n      </thead>\n      <tbody>`;\n\nfor (const stock of data.allResults) {\n  const ticker = stock.ticker || '';\n  const name = stock.name || '';\n  const price = stock.currentPrice ? stock.currentPrice.toFixed(1) : 'N/A';\n  const fairValue = stock.fairValue ? stock.fairValue.toFixed(1) : 'N/A';\n  const upside = stock.upside ? stock.upside.toFixed(1) + '%' : 'N/A';\n  const rec = stock.recommendation || 'N/A';\n  const color = getColor(rec);\n  const bgColor = getBgColor(rec);\n  html += `\n        <tr style=\"background:${bgColor}\">\n          <td><strong>${ticker}</strong></td>\n          <td>${name}</td>\n          <td>${price}</td>\n          <td>${fairValue}</td>\n          <td>${upside}</td>\n          <td><span class=\"rec-badge\" style=\"background:${color}\">${rec}</span></td>\n        </tr>`;\n}\n\nhtml += `\n      </tbody>\n    </table>\n  </div>\n  <div class=\"footer\">\n    <p>此報告由 n8nFinMind 七模型估值系統自動產生</p>\n    <p>模型：DCF / 股利折現 / PER / PBR / CapEx / EV-EBITDA / PSR</p>\n  </div>\n</div>\n</body>\n</html>`;\n\nreturn [{ json: { htmlReport: html, subject: `台股估值週報 — ${data.date}` } }];"
+      },
+      "id": "a1b2c3d4-1111-4000-a000-000000000008",
+      "name": "產生 Email HTML 報告",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1500, 450]
+    },
+    {
+      "parameters": {
+        "chatId": "",
+        "text": "={{ $json.telegramMessage }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "a1b2c3d4-1111-4000-a000-000000000009",
+      "name": "發送 Telegram 摘要",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1750, 150],
+      "credentials": {
+        "telegramApi": {
+          "id": "",
+          "name": "Telegram Bot API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "",
+        "subject": "={{ $json.subject }}",
+        "emailType": "html",
+        "message": "={{ $json.htmlReport }}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-1111-4000-a000-000000000010",
+      "name": "發送 Email 報告",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [1750, 450],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "",
+          "name": "Gmail OAuth2"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "每週一 02:00 觸發": {
+      "main": [
+        [
+          {
+            "node": "取得追蹤清單",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "取得追蹤清單": {
+      "main": [
+        [
+          {
+            "node": "分批處理",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "分批處理": {
+      "main": [
+        [
+          {
+            "node": "批次估值分析",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "合併結果與統計",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "批次估值分析": {
+      "main": [
+        [
+          {
+            "node": "等待 30 秒",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "等待 30 秒": {
+      "main": [
+        [
+          {
+            "node": "分批處理",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "合併結果與統計": {
+      "main": [
+        [
+          {
+            "node": "產生 Telegram 訊息",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "產生 Email HTML 報告",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "產生 Telegram 訊息": {
+      "main": [
+        [
+          {
+            "node": "發送 Telegram 摘要",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "產生 Email HTML 報告": {
+      "main": [
+        [
+          {
+            "node": "發送 Email 報告",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Taipei"
+  },
+  "versionId": "1",
+  "meta": {
+    "instanceId": ""
+  },
+  "tags": []
+}
