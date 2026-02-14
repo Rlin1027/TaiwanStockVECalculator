@@ -76,16 +76,17 @@ node src/server.js
 
 ## Step 2: 設定 n8n 環境變數
 
-n8n 工作流需要兩個環境變數，透過 `$env` 存取：
+n8n 工作流需要以下環境變數，透過 `$env` 存取：
 
 | 變數 | 說明 | 範例 |
 |------|------|------|
 | `VALUATION_API_URL` | 估值微服務位址 | `https://your-api.zeabur.app` 或 `http://localhost:3000` |
 | `OPENAI_API_KEY` | OpenAI API Key | `sk-...` |
+| `N8N_WEBHOOK_URL` | n8n 自身的外部 URL（Telegram Bot 呼叫 on-demand webhook 用） | `https://your-n8n-url.zeabur.app` |
 
 ### Zeabur n8n（推薦）
 
-在 n8n 服務的環境變數中加入上述兩個變數，並確保設定：
+在 n8n 服務的環境變數中加入上述變數，並確保設定：
 
 ```
 N8N_BLOCK_ENV_ACCESS_IN_NODE=false
@@ -101,6 +102,7 @@ services:
     environment:
       - VALUATION_API_URL=http://host.docker.internal:3000
       - OPENAI_API_KEY=sk-your-key-here
+      - N8N_WEBHOOK_URL=http://localhost:5678
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
 ```
 
@@ -112,6 +114,7 @@ services:
 ```bash
 export VALUATION_API_URL=http://localhost:3000
 export OPENAI_API_KEY=sk-your-key-here
+export N8N_WEBHOOK_URL=http://localhost:5678
 export N8N_BLOCK_ENV_ACCESS_IN_NODE=false
 n8n start
 ```
@@ -261,6 +264,12 @@ Telegram 訊息觸發 → Code 解析指令 → 動態 HTTP Request → Code 格
 ```
 
 5 個節點。需先設定 Telegram credentials（見 Step 4）。用同一個 Bot Token 即可。
+
+> **重要**：Bot 的 `/analyze`（`/a`）指令會呼叫 on-demand-analysis 工作流的 webhook（`/webhook/analyze`），因此必須：
+> 1. 先匯入並 **Activate** `on-demand-analysis.json` 工作流
+> 2. 設定 `N8N_WEBHOOK_URL` 環境變數指向 n8n 自身的外部 URL
+>
+> 若 on-demand 工作流未啟用，`/analyze` 會收到 404 錯誤。其他指令（`/list`、`/hold`、`/alert` 等）不受影響，仍直接呼叫估值微服務 API。
 
 支援 20+ 指令，涵蓋所有系統功能：
 
