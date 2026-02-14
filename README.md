@@ -1,6 +1,6 @@
 # TaiwanStockVECalculator
 
-台股七模型估值分析系統 — 基於 FinMind API 的多維度量化估值工具，支援 HTTP API 微服務 + n8n 自動化工作流 + LLM 智慧分類 + 回測準確度驗證 + 智慧投組管理 + 警示推播
+台股七模型估值分析系統 — 基於 FinMind API 的多維度量化估值工具，支援 HTTP API 微服務 + n8n 自動化工作流 + LLM 智慧分類 + 回測準確度驗證 + 回饋調權系統 + 智慧投組管理 + 警示推播
 
 ## 功能概述
 
@@ -47,6 +47,11 @@ src/
 ├── backtest/
 │   ├── engine.js            # 回測引擎：漸進式股價比對 + 90d/180d 回填
 │   └── metrics.js           # 準確度指標：hit rate、MAE、模型排名
+├── feedback/
+│   ├── adaptive-weights.js  # 自適應權重：依回測 MAE 計算各分類最佳權重
+│   ├── cache.js             # 記憶體快取：24h 過期 + lazy refresh
+│   ├── resynthesize-feedback.js # 回饋重新合成：混合權重計算合理價
+│   └── index.js             # 統一匯出介面
 ├── portfolio/
 │   ├── analytics.js         # 投組分析：績效、產業配置、風險指標
 │   └── alerts.js            # 警示系統：價格/估值/分類變化觸發
@@ -58,7 +63,7 @@ n8n_workflows/
 ├── on-demand-analysis.json      # 按需查詢：Webhook 觸發 + LLM 分類 + 即時回傳
 ├── portfolio-management.json    # 追蹤清單管理：add / remove / list
 ├── phase3-management.json       # Phase 3 管理：持倉 / 回測 / 警示（11 種操作）
-├── weekly-valuation.json        # 每週排程：批次分析 + LLM 分類 + 回測摘要 + 投組績效
+├── weekly-valuation.json        # 每週排程：批次分析 + 回測掃描 + 回饋調權 + LLM 分類 + 投組績效
 ├── daily-alerts.json            # 每日警示：收盤後檢查觸發條件 → Telegram 推播
 └── telegram-bot.json            # Telegram Bot：對話式操作所有功能（20+ 指令）
 
@@ -249,6 +254,10 @@ node src/server.js
 | POST | `/api/backtest/run` | 觸發回測掃描（比對歷史預測 vs 實際股價） |
 | GET | `/api/backtest/summary` | 聚合準確度統計（hit rate、MAE、模型排名） |
 | GET | `/api/backtest/:ticker` | 特定股票的回測紀錄與指標 |
+| **回饋調權** | | |
+| GET | `/api/feedback/weights` | 所有分類類型的回饋權重（含樣本數、信心度） |
+| GET | `/api/feedback/weights/:type` | 特定分類的詳細權重（預設 vs 回饋 vs 混合） |
+| POST | `/api/feedback/refresh` | 強制重算回饋快取（可自訂 minSamples、blendRatio） |
 | **投組管理** | | |
 | GET | `/api/portfolio/holdings` | 取得所有持倉明細 |
 | PUT | `/api/portfolio/holdings/:ticker` | 新增/更新持倉（body: `{"shares", "costBasis", "notes"}`) |
@@ -340,6 +349,57 @@ curl -X POST http://localhost:3000/api/alerts/check
 }
 ```
 
+## 回饋調權系統
+
+系統根據回測結果自動學習各估值模型的準確度，動態調整模型權重，形成「預測 → 回測 → 回饋 → 優化」的閉環。
+
+### 運作原理
+
+1. **MAE 計算**：收集各分類（成長股、存股等）下每個模型的平均絕對誤差（MAE）
+2. **反比權重**：MAE 越低的模型獲得越高權重（`weight = 1/MAE`，正規化後加總 = 1）
+3. **多時間維度**：綜合 30d（25%）、90d（50%）、180d（25%）三個回測窗口
+4. **混合策略**：回饋權重與預設權重按比例混合（預設 30% 回饋 + 70% 預設），避免過擬合
+
+### 回饋注入點
+
+| 注入點 | 說明 |
+|:-------|:-----|
+| `analyzeStock()` | 即時分析時自動注入回饋權重，結果含 `feedbackMetadata` |
+| `analyzeBatch()` | 批次開始前刷新快取，所有股票共用同一回饋快取 |
+| 每週工作流 | LLM system prompt 包含回饋權重表格供 AI 參考 |
+| Telegram/Email | 報告顯示回饋狀態、調權來源、信心度指標 |
+
+### 回饋權重 API
+
+```bash
+# 查看所有分類的回饋權重
+curl http://localhost:3000/api/feedback/weights
+
+# 查看特定分類的詳細權重（預設 vs 回饋 vs 混合）
+curl http://localhost:3000/api/feedback/weights/成長股
+
+# 強制重算（可自訂參數）
+curl -X POST http://localhost:3000/api/feedback/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"minSamples": 20, "blendRatio": 0.40}'
+```
+
+### 信心度分級
+
+| 等級 | 樣本數 | 說明 |
+|:-----|-------:|:-----|
+| HIGH | > 100 筆 | 權重穩定可靠 |
+| MEDIUM | 30–100 筆 | 參考價值中等 |
+| LOW | < 30 筆 | 僅供參考，預設權重為主 |
+
+### 相關環境變數
+
+| 變數 | 預設值 | 說明 |
+|:-----|:-------|:-----|
+| `FEEDBACK_ENABLED` | `true` | 是否啟用回饋調權 |
+| `FEEDBACK_MIN_SAMPLES` | `10` | 各分類最少回測樣本數 |
+| `FEEDBACK_BLEND_RATIO` | `0.30` | 回饋權重佔比（0–1） |
+
 ## 智慧投組管理
 
 在原有追蹤清單之上，新增完整的持倉管理功能。
@@ -425,6 +485,7 @@ curl -X POST http://localhost:3000/api/alerts/check
 │  /api/alerts             警示 CRUD + 觸發檢查                       │
 │  /api/backtest           回測驗證 + 準確度統計                       │
 │  /api/resynthesize       LLM 權重重新合成                            │
+│  /api/feedback           回饋調權（自適應權重 + 快取管理）            │
 │                                                                     │
 │  ┌──────────┐  ┌───────────┐  ┌──────────┐                        │
 │  │ FinMind  │  │ OpenAI    │  │ SQLite   │                        │
@@ -468,11 +529,14 @@ POST /webhook/phase3 {"action": "<action>", ...params}
 
 ```
 Cron 每週一 02:00
-  → 取得追蹤清單 → 準備批次請求 → 批次估值分析 (5min timeout)
-  → 合併結果與統計 → gpt-5-mini 智慧分類 + 權重分配
+  → 取得追蹤清單 → 準備批次請求 → 分批估值分析 (10 檔/批 + 7 分鐘間隔)
+  → 合併結果與統計
+  → 觸發回測掃描 (POST /api/backtest/run)
+  → 取得回饋權重 (GET /api/feedback/weights)
+  → gpt-5-mini 智慧分類 + 權重分配（含回饋權重參考）
   → Guardrails 驗證 → LLM 權重重新加權
   → 取得回測摘要 + 投組績效
-  → Telegram 摘要 + Email HTML 詳細報告
+  → Telegram 摘要（含回饋調權狀態）+ Email HTML 報告（含回饋權重視覺化）
 ```
 
 #### 5. 每日警示推播 (`daily-alerts.json`)
@@ -634,6 +698,7 @@ node src/batch-test.js 2330 2454 2317
 - **LLM 智慧分類**：gpt-5-mini 動態分類 + 權重分配，Guardrails 雙層驗證確保安全回退
 - **n8n 工作流整合**：每週自動排程 + Webhook 按需查詢 + 每日警示推播 + Telegram Bot 對話式操作
 - **回測準確度驗證**：漸進式回測（30d/90d/180d），計算 hit rate、MAE、模型排名
+- **回饋調權系統**：根據回測 MAE 自動優化模型權重，30% 回饋 + 70% 預設混合策略，24h 快取
 - **智慧投組管理**：持倉追蹤、產業配置、風險指標、估值分組，整合至週報
 - **警示推播系統**：4 種觸發條件（價格/估值/分類變化），每日 Telegram 自動通知
 - **零侵入式架構**：Phase 2-3 所有新功能透過新模組 + 新端點實現，不修改核心計算邏輯
