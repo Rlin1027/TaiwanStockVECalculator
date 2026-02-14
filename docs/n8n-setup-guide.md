@@ -223,29 +223,38 @@ curl -s -X POST https://your-n8n-url/webhook/phase3 \
 ### 3.4 每週估值報告 (`weekly-valuation.json`)
 
 ```
-Cron 每週一 02:00 → 取得追蹤清單 → 準備批次請求 → 批次估值分析 (5min timeout)
-  → 合併結果與統計 → gpt-5-mini 分類 → Guardrails 驗證 → Apply LLM Weights
+Cron 每週一 02:00 → 取得追蹤清單 → 拆成 10 檔/批
+  → 分批估值分析 (每批間隔 7 分鐘避免 FinMind 限流)
+  → 合併結果與統計
+  → 觸發回測掃描 → 取得回饋權重
+  → gpt-5-mini 分類（含回饋權重參考）→ Guardrails 驗證 → Apply LLM Weights
   → 取得回測摘要 → 取得投組績效
   → Telegram 摘要 + Email HTML 報告
 ```
 
-13 個節點（線性流程，無迴圈）。**先不要 Activate**，用 n8n UI 的 **Test Workflow** 手動測試。
+19 個節點（含 splitInBatches 迴圈 + onError 容錯）。**先不要 Activate**，用 n8n UI 的 **Test Workflow** 手動測試。
 
-> **注意**：批次分析 15 檔約需 2-3 分鐘（API 內建 3 秒間隔），請耐心等待。
+> **注意**：批次分析每批 10 檔，批次間等待 7 分鐘避免 FinMind API 限流。追蹤 50 檔股票需約 35 分鐘完成。
 
 逐節點驗證：
 
 | 節點 | 驗證要點 |
 |------|---------|
 | 取得追蹤清單 | 回傳 `{"tickers": [{"ticker":"2330",...}, ...]}` |
-| 準備批次請求 | 提取純 ticker 字串陣列 `["2330", "2317", ...]` |
+| 準備批次請求 | 拆成每 10 檔一批 `[{batchIndex, totalBatches, tickers}, ...]` |
+| 分批處理 | splitInBatches 逐批處理，完成後走 done 分支 |
 | 批次估值分析 | 回傳 `{results: [...], summary: {total, success, failed}}` |
+| 等待 7 分鐘 | 批次間隔等待，避免 FinMind 限流 |
 | 合併結果與統計 | allResults 陣列 + buyCount/sellCount/holdCount 統計 |
-| 準備 LLM Prompt | openaiBody 包含 system + user prompt |
-| LLM 分類 | OpenAI 回傳 JSON，每股有 type + weights |
+| 觸發回測掃描 | POST /api/backtest/run — 失敗時 onError 繼續 |
+| 取得回饋權重 | GET /api/feedback/weights — 失敗時 onError 繼續 |
+| 準備 LLM Prompt | 用 `$('合併結果與統計')` 取資料，含回饋權重參考表 |
+| LLM 分類 | OpenAI 回傳 JSON — 失敗時 onError 繼續 |
 | Guardrails 驗證 | stocks 物件通過格式驗證 |
-| Apply LLM Weights | resynthesize 回傳結果（stocks 為空時自動 skip） |
-| Telegram / Email | 格式化訊息包含 AI 分類、估值與敘述 |
+| Apply LLM Weights | resynthesize 回傳結果 — 失敗時 onError 繼續 |
+| 取得回測摘要 | GET /api/backtest/summary — 失敗時 onError 繼續 |
+| 取得投組績效 | GET /api/portfolio/analytics — 失敗時 onError 繼續 |
+| Telegram / Email | 格式化訊息包含 AI 分類、回饋狀態、估值與敘述 |
 
 ### 3.5 每日警示推播 (`daily-alerts.json`)
 
@@ -326,6 +335,34 @@ Telegram 訊息觸發 → Code 解析指令 → 動態 HTTP Request → Code 格
 | gpt-5-mini temperature 錯誤 | 不支援自訂 temperature | 移除 temperature 參數 |
 | `$vars` 回傳 undefined | 部分版本功能異常 | 改用 `$env` + 設定 `N8N_BLOCK_ENV_ACCESS_IN_NODE=false` |
 
+## 容錯機制（Error Resilience）
+
+每週估值工作流採用分層容錯策略，確保基本報告在加值功能失敗時仍能正常發送：
+
+### 必要節點（無容錯）
+
+| 節點 | 說明 |
+|------|------|
+| 取得追蹤清單 | 無資料 = 無法繼續 |
+| 批次估值分析 | 無結果 = 無法繼續 |
+
+### 加值節點（onError: continueRegularOutput）
+
+| 節點 | 失敗時行為 |
+|------|-----------|
+| 觸發回測掃描 | 跳過回測，pipeline 繼續 |
+| 取得回饋權重 | 使用預設權重，回饋區段顯示「尚未啟用」 |
+| LLM 分類 | Guardrails 收到空內容，自動回退至確定性結果 |
+| Apply LLM Weights | 使用原始確定性分類結果 |
+| 取得回測摘要 | 報告中跳過回測區段 |
+| 取得投組績效 | 報告中跳過投組區段 |
+
+### 防禦性資料取值
+
+「準備 LLM Prompt」、「產生 Telegram 訊息」、「產生 Email HTML 報告」三個 Code 節點均使用 `try/catch` 防禦性取值回饋權重資料，避免上游 HTTP 節點返回錯誤物件時 crash。
+
+> **設計原則**：前段（資料取得）是必要的，失敗就該停；後段（LLM 增強、回測、報告細節）是加值的，任何一個失敗都不應阻止基本報告發送。
+
 ## 常見問題
 
 | 問題 | 解法 |
@@ -338,6 +375,9 @@ Telegram 訊息觸發 → Code 解析指令 → 動態 HTTP Request → Code 格
 | FinMind API 429 | 超過免費額度限制（600 calls/hour），等待後重試 |
 | `Error in workflow` (GET 請求) | 確認 `sendBody` 使用動態表達式，GET 時應為 false |
 | Apply LLM Weights 400 錯誤 | stocks 為空時觸發，已用 `skipResynth` flag 處理 |
+| HTTP 節點 onError 橘色標記 | 正常行為 — 表示該節點設有 `continueRegularOutput` 容錯 |
+| 回饋調權顯示「尚未啟用」 | 正常行為 — 需累積足夠回測數據（各分類 ≥10 筆）後自動啟用 |
+| 回測摘要 overall: null | 正常行為 — 尚無 30 天以上的歷史分析紀錄可回測 |
 
 ## Guardrails 雙層防護
 

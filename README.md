@@ -531,12 +531,14 @@ POST /webhook/phase3 {"action": "<action>", ...params}
 Cron 每週一 02:00
   → 取得追蹤清單 → 準備批次請求 → 分批估值分析 (10 檔/批 + 7 分鐘間隔)
   → 合併結果與統計
-  → 觸發回測掃描 (POST /api/backtest/run)
-  → 取得回饋權重 (GET /api/feedback/weights)
+  → 觸發回測掃描 → 取得回饋權重（onError 容錯，失敗不中斷）
   → gpt-5-mini 智慧分類 + 權重分配（含回饋權重參考）
-  → Guardrails 驗證 → LLM 權重重新加權
-  → 取得回測摘要 + 投組績效
+  → Guardrails 驗證 → LLM 權重重新加權（onError 容錯）
+  → 取得回測摘要 + 投組績效（onError 容錯）
   → Telegram 摘要（含回饋調權狀態）+ Email HTML 報告（含回饋權重視覺化）
+
+容錯設計：6 個增強型 HTTP 節點設有 onError: continueRegularOutput，
+API server 異常時 pipeline 仍能完成核心估值分析與通知發送。
 ```
 
 #### 5. 每日警示推播 (`daily-alerts.json`)
@@ -581,6 +583,7 @@ Telegram 訊息觸發
 - **GET + sendBody: true**：會造成執行錯誤，需用動態表達式 `={{ $json.apiMethod === 'POST' }}` 控制
 - **gpt-5-mini**：不支援自訂 temperature，僅使用預設值
 - **環境變數**：使用 `$env` 存取（需設定 `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`）
+- **HTTP 節點容錯**：增強型節點設有 `onError: "continueRegularOutput"`，API 失敗時輸出 `{error: "..."}` 繼續流程，下游 Code 節點以防禦性 try/catch 取值
 
 ### 設定指南
 
@@ -697,6 +700,7 @@ node src/batch-test.js 2330 2454 2317
 - **HTTP API 微服務**：Express + SQLite 持久化，支援單股/批次分析、歷史比較、追蹤清單
 - **LLM 智慧分類**：gpt-5-mini 動態分類 + 權重分配，Guardrails 雙層驗證確保安全回退
 - **n8n 工作流整合**：每週自動排程 + Webhook 按需查詢 + 每日警示推播 + Telegram Bot 對話式操作
+- **容錯管道設計**：每週工作流採分層容錯策略 — 核心估值節點 fail-stop，增強節點（回測/回饋/LLM）onError 繼續，確保通知必達
 - **回測準確度驗證**：漸進式回測（30d/90d/180d），計算 hit rate、MAE、模型排名
 - **回饋調權系統**：根據回測 MAE 自動優化模型權重，30% 回饋 + 70% 預設混合策略，24h 快取
 - **智慧投組管理**：持倉追蹤、產業配置、風險指標、估值分組，整合至週報
