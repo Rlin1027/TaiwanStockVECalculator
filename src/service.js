@@ -136,8 +136,10 @@ export async function analyzeStock(ticker) {
     currentPrice: data.latestPrice,
   });
 
-  // 回傳與 toJSON() 相同的結構（JSON 物件）
-  return JSON.parse(toJSON(report));
+  // 回傳與 toJSON() 相同的結構（JSON 物件），附加公司名稱
+  const result = JSON.parse(toJSON(report));
+  result.stockName = data.stockInfo?.stock_name || '';
+  return result;
 }
 
 /**

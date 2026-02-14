@@ -16,6 +16,7 @@ export function checkAlerts(activeAlerts, latestAnalyses, currentPrices) {
     const analysis = latestAnalyses[alert.ticker];
     const price = currentPrices[alert.ticker];
     const result = analysis?.result;
+    const name = result?.stockName ? ' ' + result.stockName : '';
 
     switch (alert.alert_type) {
       case 'price_above':
@@ -23,7 +24,7 @@ export function checkAlerts(activeAlerts, latestAnalyses, currentPrices) {
           triggered.push({
             alert,
             price,
-            message: `${alert.ticker} 股價 ${price} 已突破 ${alert.threshold}`,
+            message: `${alert.ticker}${name} 股價 ${price} 已突破 ${alert.threshold}`,
           });
         }
         break;
@@ -33,7 +34,7 @@ export function checkAlerts(activeAlerts, latestAnalyses, currentPrices) {
           triggered.push({
             alert,
             price,
-            message: `${alert.ticker} 股價 ${price} 已跌破 ${alert.threshold}`,
+            message: `${alert.ticker}${name} 股價 ${price} 已跌破 ${alert.threshold}`,
           });
         }
         break;
@@ -43,7 +44,7 @@ export function checkAlerts(activeAlerts, latestAnalyses, currentPrices) {
           triggered.push({
             alert,
             upside: result.recommendation.upside,
-            message: `${alert.ticker} 潛在上漲空間 ${result.recommendation.upside.toFixed(1)}% 超過閾值 ${alert.threshold}%`,
+            message: `${alert.ticker}${name} 潛在上漲空間 ${result.recommendation.upside.toFixed(1)}% 超過閾值 ${alert.threshold}%`,
           });
         }
         break;
@@ -58,7 +59,7 @@ export function checkAlerts(activeAlerts, latestAnalyses, currentPrices) {
               alert,
               previousType,
               currentType,
-              message: `${alert.ticker} 分類從「${previousType}」變為「${currentType}」`,
+              message: `${alert.ticker}${name} 分類從「${previousType}」變為「${currentType}」`,
             });
           }
         }
