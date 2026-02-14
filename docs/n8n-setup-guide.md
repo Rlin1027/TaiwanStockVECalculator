@@ -219,26 +219,29 @@ curl -s -X POST https://your-n8n-url/webhook/phase3 \
 ### 3.4 每週估值報告 (`weekly-valuation.json`)
 
 ```
-Cron 每週一 02:00 → 取得追蹤清單 → 分批七模型分析 → 合併結果
-  → gpt-5-mini 分類 → Guardrails 驗證 → Apply LLM Weights
-  → 取得回測摘要 + 投組績效
+Cron 每週一 02:00 → 取得追蹤清單 → 準備批次請求 → 批次估值分析 (5min timeout)
+  → 合併結果與統計 → gpt-5-mini 分類 → Guardrails 驗證 → Apply LLM Weights
+  → 取得回測摘要 → 取得投組績效
   → Telegram 摘要 + Email HTML 報告
 ```
 
-16 個節點。**先不要 Activate**，用 n8n UI 的 **Test Workflow** 手動測試。
+13 個節點（線性流程，無迴圈）。**先不要 Activate**，用 n8n UI 的 **Test Workflow** 手動測試。
+
+> **注意**：批次分析 15 檔約需 2-3 分鐘（API 內建 3 秒間隔），請耐心等待。
 
 逐節點驗證：
 
 | 節點 | 驗證要點 |
 |------|---------|
-| 取得追蹤清單 | 回傳 `{"tickers": ["2330", ...]}` |
-| 批次估值分析 | 每股有完整七模型結果 |
-| 合併結果與統計 | allResults 陣列 + stats 統計 |
+| 取得追蹤清單 | 回傳 `{"tickers": [{"ticker":"2330",...}, ...]}` |
+| 準備批次請求 | 提取純 ticker 字串陣列 `["2330", "2317", ...]` |
+| 批次估值分析 | 回傳 `{results: [...], summary: {total, success, failed}}` |
+| 合併結果與統計 | allResults 陣列 + buyCount/sellCount/holdCount 統計 |
 | 準備 LLM Prompt | openaiBody 包含 system + user prompt |
 | LLM 分類 | OpenAI 回傳 JSON，每股有 type + weights |
 | Guardrails 驗證 | stocks 物件通過格式驗證 |
 | Apply LLM Weights | resynthesize 回傳結果（stocks 為空時自動 skip） |
-| Telegram / Email | 格式化訊息包含 AI 分類與敘述 |
+| Telegram / Email | 格式化訊息包含 AI 分類、估值與敘述 |
 
 ### 3.5 每日警示推播 (`daily-alerts.json`)
 

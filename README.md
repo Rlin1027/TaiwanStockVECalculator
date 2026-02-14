@@ -468,8 +468,8 @@ POST /webhook/phase3 {"action": "<action>", ...params}
 
 ```
 Cron 每週一 02:00
-  → 取得追蹤清單 → 分批七模型分析
-  → gpt-5-mini 智慧分類 + 權重分配
+  → 取得追蹤清單 → 準備批次請求 → 批次估值分析 (5min timeout)
+  → 合併結果與統計 → gpt-5-mini 智慧分類 + 權重分配
   → Guardrails 驗證 → LLM 權重重新加權
   → 取得回測摘要 + 投組績效
   → Telegram 摘要 + Email HTML 詳細報告
