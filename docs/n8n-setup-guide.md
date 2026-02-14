@@ -1,72 +1,98 @@
 # n8n 工作流匯入與設定指南
 
-本文件說明如何將估值系統的 n8n 工作流匯入並設定完成，包括每週自動排程和按需查詢兩個工作流。
+本文件說明如何將估值系統的 5 個 n8n 工作流匯入並設定完成。
 
 ## 前置條件
 
 | 項目 | 說明 |
 |------|------|
 | Node.js 18+ | 估值微服務執行環境 |
-| n8n | 工作流引擎（Docker 或本地安裝皆可） |
+| n8n v2.7+ | 工作流引擎（Zeabur Self-Hosted 或本地安裝） |
 | FinMind API Token | [免費申請](https://finmindtrade.com/) |
-| OpenAI API Key | GPT-4o LLM 分類用 |
+| OpenAI API Key | gpt-5-mini LLM 分類用 |
 
 ## 架構總覽
 
 ```
-n8n 工作流
-  ├── 呼叫估值 API（確定性七模型）
-  ├── 呼叫 OpenAI GPT-4o（LLM 智慧分類 + 權重）
+n8n 工作流引擎
+  ├── Webhook 觸發（即時分析 / 追蹤清單 / Phase 3 管理）
+  ├── 排程觸發（每週估值報告 / 每日警示檢查）
+  ├── Code 路由邏輯（替代 Switch/If 節點）
+  ├── 呼叫 OpenAI gpt-5-mini（LLM 智慧分類 + 權重）
   ├── Guardrails 驗證（格式 + 業務規則）
-  ├── 呼叫 resynthesize API（LLM 權重重新加權）
   └── 發送通知（Telegram / Email）
           ↕
 估值微服務 (Express + SQLite)
-  ├── POST /api/analyze/:ticker     → 確定性七模型分析
-  ├── POST /api/analyze/batch       → 批次分析
-  ├── GET  /api/compare/:ticker     → 歷史差異比較
-  ├── POST /api/resynthesize/:ticker → LLM 權重重新合成
-  ├── POST /api/resynthesize/batch  → 批次重新合成
-  ├── GET  /api/history/:ticker     → 歷史紀錄
-  └── GET/POST/DELETE /api/portfolio → 追蹤清單管理
+  ├── POST /api/analyze/:ticker       → 確定性七模型分析
+  ├── POST /api/analyze/batch         → 批次分析
+  ├── GET  /api/compare/:ticker       → 歷史差異比較
+  ├── POST /api/resynthesize/:ticker  → LLM 權重重新合成
+  ├── POST /api/resynthesize/batch    → 批次重新合成
+  ├── GET/POST/DELETE /api/portfolio  → 追蹤清單管理
+  ├── GET/PUT/DELETE /api/portfolio/holdings → 持倉管理
+  ├── GET /api/portfolio/analytics    → 投組績效分析
+  ├── GET/POST/DELETE /api/alerts     → 警示 CRUD
+  ├── POST /api/alerts/check          → 觸發警示檢查
+  ├── POST /api/backtest/run          → 執行回測
+  ├── GET /api/backtest/summary       → 回測摘要
+  └── GET /api/backtest/:ticker       → 個股回測紀錄
 ```
 
-## Step 1: 啟動估值微服務
+## Step 1: 部署估值微服務
+
+### 方法 A: Zeabur 雲端部署（推薦）
+
+1. Fork 或 push 本專案到 GitHub
+2. 在 [Zeabur](https://zeabur.com/) 建立新 Service → 選擇 GitHub Repo
+3. 設定環境變數：
+
+| 變數 | 說明 | 範例 |
+|------|------|------|
+| `FINMIND_API_TOKEN` | FinMind API Token | `eyJ...` |
+| `DB_PATH` | SQLite 資料庫路徑 | `/data/valuation.db` |
+
+4. 設定 Volume（硬碟）：
+   - **硬碟 ID**: `data`
+   - **掛載目錄**: `/data`
+
+5. 驗證部署成功：
+
+```bash
+curl https://your-api-url.zeabur.app/api/health
+# → {"status":"ok","uptime":...,"version":"1.0.0"}
+```
+
+### 方法 B: 本地執行
 
 ```bash
 cd /path/to/n8nFinMind
-
-# 安裝依賴
 npm install
-
-# 設定環境變數
 cp .env.example .env
 # 編輯 .env，填入 FINMIND_API_TOKEN
-
-# 啟動
 node src/server.js
 # → Valuation API running on port 3000
 ```
 
-驗證服務正常：
-
-```bash
-curl http://localhost:3000/api/health
-# → {"status":"ok","uptime":...,"version":"1.0.0"}
-```
-
 ## Step 2: 設定 n8n 環境變數
 
-n8n 工作流需要兩個環境變數：
+n8n 工作流需要兩個環境變數，透過 `$env` 存取：
 
 | 變數 | 說明 | 範例 |
 |------|------|------|
-| `VALUATION_API_URL` | 估值微服務位址 | `http://localhost:3000` |
+| `VALUATION_API_URL` | 估值微服務位址 | `https://your-api.zeabur.app` 或 `http://localhost:3000` |
 | `OPENAI_API_KEY` | OpenAI API Key | `sk-...` |
 
-### 方法 A: Docker Compose（推薦）
+### Zeabur n8n（推薦）
 
-在 `docker-compose.yml` 的 n8n service 加入：
+在 n8n 服務的環境變數中加入上述兩個變數，並確保設定：
+
+```
+N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+```
+
+> **重要**：必須設定 `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`，否則 Code 節點和 HTTP Request 表達式無法透過 `$env` 存取環境變數。
+
+### Docker Compose
 
 ```yaml
 services:
@@ -74,178 +100,201 @@ services:
     environment:
       - VALUATION_API_URL=http://host.docker.internal:3000
       - OPENAI_API_KEY=sk-your-key-here
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
 ```
 
 > `host.docker.internal` 讓 Docker 容器存取主機的 localhost:3000。
 > Linux 需額外加 `extra_hosts: ["host.docker.internal:host-gateway"]`。
 
-### 方法 B: n8n 本地執行
+### 本地 n8n
 
 ```bash
 export VALUATION_API_URL=http://localhost:3000
 export OPENAI_API_KEY=sk-your-key-here
+export N8N_BLOCK_ENV_ACCESS_IN_NODE=false
 n8n start
 ```
 
-### 方法 C: n8n UI 設定
+> **注意**：n8n Settings → Variables（`$vars`）在部分版本可能無法正常運作，建議統一使用系統環境變數（`$env`）。
 
-Settings → Variables → 新增上述兩個變數。
+## Step 3: 匯入工作流
 
-## Step 3: 匯入 On-Demand 工作流（按需查詢）
+n8n UI 左側 → **Workflows** → **Add Workflow** → 右上角 **...** → **Import from File**。
 
-1. n8n UI 左側 → **Workflows** → **Add Workflow**
-2. 右上角 **...** 選單 → **Import from File**
-3. 選擇 `n8n_workflows/on-demand-analysis.json`
-4. 確認 9 個節點的連線順序：
+### 3.1 即時估值分析 (`on-demand-analysis.json`)
 
 ```
-Webhook 接收查詢 → 驗證 Ticker 格式 → 呼叫估值 API → GET Compare
-  → 準備 LLM Prompt → LLM 分類 → Guardrails 驗證
-  → Apply LLM Weights → 回傳分析結果
+Webhook /analyze → 驗證 Ticker → 呼叫估值 API → GET Compare
+  → 準備 LLM Prompt → LLM 分類 → Guardrails 驗證 → Apply LLM Weights
 ```
 
-5. 點擊 **Save**，然後 **Activate**（右上角開關打開）
-
-### 測試觸發
+8 個節點，Activate 後測試：
 
 ```bash
-curl -s -X POST http://localhost:5678/webhook/analyze \
+curl -s -X POST https://your-n8n-url/webhook/analyze \
   -H "Content-Type: application/json" \
   -d '{"ticker": "2330"}' | python3 -m json.tool
 ```
 
-### 預期回應
+預期回應：
 
 ```json
 {
   "source": "llm-enhanced",
   "ticker": "2330",
-  "currentPrice": 1050,
   "llmClassification": {
     "type": "成長股",
     "confidence": "HIGH",
     "narrative": "台積電以先進製程主導..."
   },
-  "weightedValuation": {
-    "fairValue": 1200,
-    "method": "DCF 40% + PER 25% + ... (LLM)"
-  },
-  "recommendation": {
-    "action": "BUY",
-    "confidence": "一般",
-    "upside": 14.3
-  }
+  "weightedValuation": { "fairValue": 1200 },
+  "recommendation": { "action": "BUY", "upside": 14.3 }
 }
 ```
 
-> 數值為示意，實際值取決於最新財報數據。
-
-## Step 4: 匯入 Weekly Valuation 工作流（每週排程）
-
-1. 同上方式匯入 `n8n_workflows/weekly-valuation.json`
-2. 確認 14 個節點的連線：
+### 3.2 追蹤清單管理 (`portfolio-management.json`)
 
 ```
-Cron 每週觸發 → 取得追蹤清單 → 批次分析 → 合併結果與統計
-  → 準備 LLM Prompt → LLM 分類 → Guardrails 驗證 → Apply LLM Weights
-  → 產生 Telegram 訊息 → 發送 Telegram
-  → 產生 Email 報告 → 發送 Email
+Webhook /portfolio → Code 路由邏輯 → 動態 HTTP Request
 ```
 
-3. **先不要 Activate**，先用手動測試
-
-### 設定追蹤清單
+3 個節點，支援 3 種操作：
 
 ```bash
-# 新增追蹤股票
-curl -s -X POST http://localhost:3000/api/portfolio \
+# 新增追蹤
+curl -s -X POST https://your-n8n-url/webhook/portfolio \
   -H "Content-Type: application/json" \
-  -d '{"tickers": ["2330", "2884", "2317"]}'
+  -d '{"action": "add", "tickers": ["2330", "2884"]}'
 
-# 確認清單
-curl -s http://localhost:3000/api/portfolio
-# → {"tickers":["2330","2884","2317"]}
+# 查看清單
+curl -s -X POST https://your-n8n-url/webhook/portfolio \
+  -H "Content-Type: application/json" \
+  -d '{"action": "list"}'
+
+# 移除追蹤
+curl -s -X POST https://your-n8n-url/webhook/portfolio \
+  -H "Content-Type: application/json" \
+  -d '{"action": "remove", "tickers": ["2884"]}'
 ```
 
-### 手動測試
+### 3.3 Phase 3 管理 (`phase3-management.json`)
 
-在 n8n UI 開啟 weekly-valuation 工作流 → 點擊頂部 **Test Workflow** 按鈕。
+```
+Webhook /phase3 → Code 路由邏輯 → 動態 HTTP Request (method/url/sendBody)
+```
 
-### 逐節點驗證
+3 個節點，支援 11 種操作：
+
+| 類別 | Action | 說明 |
+|------|--------|------|
+| 持倉 | `holdings_add` | 新增/更新持倉（需 ticker, shares, costBasis） |
+| 持倉 | `holdings_remove` | 移除持倉（需 ticker） |
+| 持倉 | `holdings_list` | 列出所有持倉 |
+| 持倉 | `analytics` | 投組績效分析 |
+| 警示 | `alert_add` | 建立警示（需 ticker, alertType, threshold） |
+| 警示 | `alert_list` | 列出所有警示 |
+| 警示 | `alert_check` | 觸發一次警示檢查 |
+| 警示 | `alert_remove` | 停用警示（需 alertId） |
+| 回測 | `backtest_run` | 執行回測掃描 |
+| 回測 | `backtest_summary` | 回測準確度摘要 |
+| 回測 | `backtest_ticker` | 個股回測紀錄（需 ticker） |
+
+```bash
+# 新增持倉
+curl -s -X POST https://your-n8n-url/webhook/phase3 \
+  -H "Content-Type: application/json" \
+  -d '{"action": "holdings_add", "ticker": "2330", "shares": 1000, "costBasis": 580}'
+
+# 建立警示
+curl -s -X POST https://your-n8n-url/webhook/phase3 \
+  -H "Content-Type: application/json" \
+  -d '{"action": "alert_add", "ticker": "2330", "alertType": "price_below", "threshold": 550}'
+
+# 回測摘要
+curl -s -X POST https://your-n8n-url/webhook/phase3 \
+  -H "Content-Type: application/json" \
+  -d '{"action": "backtest_summary"}'
+```
+
+### 3.4 每週估值報告 (`weekly-valuation.json`)
+
+```
+Cron 每週一 02:00 → 取得追蹤清單 → 分批七模型分析 → 合併結果
+  → gpt-5-mini 分類 → Guardrails 驗證 → Apply LLM Weights
+  → 取得回測摘要 + 投組績效
+  → Telegram 摘要 + Email HTML 報告
+```
+
+16 個節點。**先不要 Activate**，用 n8n UI 的 **Test Workflow** 手動測試。
+
+逐節點驗證：
 
 | 節點 | 驗證要點 |
 |------|---------|
-| 取得追蹤清單 | 回傳 `{"tickers": ["2330", "2884", ...]}` |
-| 批次分析 | 每股有完整七模型結果 |
+| 取得追蹤清單 | 回傳 `{"tickers": ["2330", ...]}` |
+| 批次估值分析 | 每股有完整七模型結果 |
 | 合併結果與統計 | allResults 陣列 + stats 統計 |
 | 準備 LLM Prompt | openaiBody 包含 system + user prompt |
 | LLM 分類 | OpenAI 回傳 JSON，每股有 type + weights |
 | Guardrails 驗證 | stocks 物件通過格式驗證 |
-| Apply LLM Weights | batch resynthesize 回傳 enhanced/fallback 結果 |
-| Telegram/Email | 格式化訊息包含 AI 分類與敘述 |
+| Apply LLM Weights | resynthesize 回傳結果（stocks 為空時自動 skip） |
+| Telegram / Email | 格式化訊息包含 AI 分類與敘述 |
 
-## Step 5: 設定通知（可選）
+### 3.5 每日警示推播 (`daily-alerts.json`)
+
+```
+Cron 每日 18:00 → POST /api/alerts/check → Code 格式化 + 過濾 → Telegram 推播
+```
+
+4 個節點。需先設定 Telegram credentials（見 Step 4）。
+
+> Code 節點同時處理格式化和過濾：若無觸發的警示，回傳空陣列 `[]` 停止流程，不發送 Telegram。
+
+## Step 4: 設定通知（可選）
 
 ### Telegram
 
-1. 建立 Telegram Bot：與 [@BotFather](https://t.me/BotFather) 對話，`/newbot` 取得 Bot Token
+1. 與 [@BotFather](https://t.me/BotFather) 對話，`/newbot` 取得 Bot Token
 2. n8n → Credentials → 新增 **Telegram API** → 填入 Bot Token
 3. 取得 Chat ID：將 Bot 加入群組，發送訊息後呼叫 `https://api.telegram.org/bot<TOKEN>/getUpdates`
-4. 在 n8n 環境變數設定 `TELEGRAM_CHAT_ID`
+4. 在每日警示和每週報告的 Telegram 節點中填入 Chat ID
 
 ### Email (Gmail)
 
 1. n8n → Credentials → 新增 **Gmail OAuth2** 或 **SMTP**
 2. Gmail OAuth2 需在 Google Cloud Console 設定 OAuth 2.0 Client
 3. SMTP 可用 Google App Password（需開啟兩步驟驗證）
+4. 在每週報告的 Email 節點中設定收件者
 
 > 不設定通知不影響分析流程，只是最後的發送節點會失敗。
+
+## n8n v2.7.4 相容性注意事項
+
+本專案的工作流已針對 n8n v2.7.4 (Self-Hosted) 優化。以下是已知限制與解決方案：
+
+| 問題 | 原因 | 解法 |
+|------|------|------|
+| Switch 節點匯入失敗 | v3.2 格式不相容 | 改用 Code 節點做路由 |
+| If 節點匯入失敗 | v2 格式不相容 | 將條件邏輯合併進 Code 節點 |
+| Respond to Webhook 匯入失敗 | 節點格式不相容 | 改用 `responseMode: "lastNode"` |
+| GET + sendBody: true 執行錯誤 | HTTP 規範限制 | `sendBody` 用動態表達式控制 |
+| gpt-5-mini temperature 錯誤 | 不支援自訂 temperature | 移除 temperature 參數 |
+| `$vars` 回傳 undefined | 部分版本功能異常 | 改用 `$env` + 設定 `N8N_BLOCK_ENV_ACCESS_IN_NODE=false` |
 
 ## 常見問題
 
 | 問題 | 解法 |
 |------|------|
-| `ECONNREFUSED` 連不到估值 API | 確認 `node src/server.js` 運行中；Docker 環境用 `host.docker.internal` |
+| `ECONNREFUSED` 連不到估值 API | 確認 API 運行中；Docker 環境用 `host.docker.internal`；Zeabur 確認內部網路 |
 | OpenAI 401 Unauthorized | 確認 `OPENAI_API_KEY` 環境變數正確且有額度 |
-| LLM 分類回退至確定性結果 | 正常行為 — 表示 LLM 輸出未通過 guardrails 驗證，查看 `guardrailErrors` |
-| Webhook 404 Not Found | 確認工作流已 **Activate**，webhook path 為 `analyze` |
-| 批次分析超時 | 增加 n8n HTTP Request 節點的 Timeout 設定（建議 120 秒） |
-| FinMind API 429 | 超過免費額度限制（600 calls/hour），等待後重試或升級方案 |
-| 金融股缺少 DCF/CapEx 模型 | 正常行為 — 金融股這些模型天然不適用，LLM 應分配 weight=0 |
+| LLM 分類回退至確定性結果 | 正常行為 — 表示 LLM 輸出未通過 guardrails 驗證 |
+| Webhook 404 Not Found | 確認工作流已 **Activate**，webhook path 正確 |
+| 批次分析超時 | HTTP Request 節點的 Timeout 已設為 120 秒 |
+| FinMind API 429 | 超過免費額度限制（600 calls/hour），等待後重試 |
+| `Error in workflow` (GET 請求) | 確認 `sendBody` 使用動態表達式，GET 時應為 false |
+| Apply LLM Weights 400 錯誤 | stocks 為空時觸發，已用 `skipResynth` flag 處理 |
 
-## 資料流詳解
-
-### On-Demand 單股流程
-
-```
-使用者 POST {"ticker":"2330"}
-  → Webhook 接收
-  → 驗證格式（4-6 位數字）
-  → POST /api/analyze/2330（確定性七模型，結果存入 SQLite）
-  → GET /api/compare/2330（取歷史差異）
-  → 構建 GPT-4o prompt（七模型數據 + 歷史差異）
-  → GPT-4o 回傳分類 + 權重（JSON mode）
-  → Guardrails 驗證（類型、權重範圍、加總、模型可用性）
-  → POST /api/resynthesize/2330（LLM 權重重新加權）
-  → 回傳增強結果
-```
-
-### Weekly 批次流程
-
-```
-Cron 每週日 09:00 觸發
-  → GET /api/portfolio（取追蹤清單）
-  → POST /api/analyze/batch（批次分析全部股票）
-  → 合併結果 + 計算統計
-  → 構建 GPT-4o prompt（全部股票數據）
-  → GPT-4o 批次分類
-  → Guardrails 驗證
-  → POST /api/resynthesize/batch（批次重新加權）
-  → 格式化 Telegram 摘要 + Email 詳細報告
-  → 發送通知
-```
-
-### Guardrails 雙層防護
+## Guardrails 雙層防護
 
 | 層級 | 位置 | 驗證內容 |
 |------|------|---------|
