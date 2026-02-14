@@ -1,6 +1,6 @@
 # n8n 工作流匯入與設定指南
 
-本文件說明如何將估值系統的 5 個 n8n 工作流匯入並設定完成。
+本文件說明如何將估值系統的 6 個 n8n 工作流匯入並設定完成。
 
 ## 前置條件
 
@@ -16,6 +16,7 @@
 ```
 n8n 工作流引擎
   ├── Webhook 觸發（即時分析 / 追蹤清單 / Phase 3 管理）
+  ├── Telegram Bot 觸發（對話式操作所有功能）
   ├── 排程觸發（每週估值報告 / 每日警示檢查）
   ├── Code 路由邏輯（替代 Switch/If 節點）
   ├── 呼叫 OpenAI gpt-5-mini（LLM 智慧分類 + 權重）
@@ -252,6 +253,38 @@ Cron 每日 18:00 → POST /api/alerts/check → Code 格式化 + 過濾 → Tel
 4 個節點。需先設定 Telegram credentials（見 Step 4）。
 
 > Code 節點同時處理格式化和過濾：若無觸發的警示，回傳空陣列 `[]` 停止流程，不發送 Telegram。
+
+### 3.6 Telegram Bot (`telegram-bot.json`)
+
+```
+Telegram 訊息觸發 → Code 解析指令 → 動態 HTTP Request → Code 格式化回覆 → Telegram 回覆
+```
+
+5 個節點。需先設定 Telegram credentials（見 Step 4）。用同一個 Bot Token 即可。
+
+支援 20+ 指令，涵蓋所有系統功能：
+
+| 類別 | 指令 | 說明 |
+|------|------|------|
+| 分析 | `/analyze 2330` 或 `/a 2330` | 即時七模型估值分析 |
+| 追蹤 | `/add 2330 2317` | 新增股票到追蹤清單 |
+| 追蹤 | `/remove 2330` 或 `/rm 2330` | 從清單移除 |
+| 追蹤 | `/list` 或 `/ls` | 查看追蹤清單 |
+| 持倉 | `/hold 2330 1000 580` | 新增持倉（股票 股數 成本價） |
+| 持倉 | `/sell 2330` | 移除持倉 |
+| 持倉 | `/holdings` 或 `/h` | 查看所有持倉 |
+| 持倉 | `/analytics` 或 `/perf` | 投組績效分析 |
+| 警示 | `/alert 2330 price_below 550` | 建立價格警示 |
+| 警示 | `/alerts` | 查看所有警示 |
+| 警示 | `/check` | 立即檢查觸發 |
+| 警示 | `/alert_off <ID>` | 停用警示 |
+| 回測 | `/backtest` | 執行回測掃描 |
+| 回測 | `/bt` | 查看回測摘要 |
+| 說明 | `/help` 或 `/start` | 完整使用指南 |
+
+> 警示類型：`price_below`（跌破）、`price_above`（突破）、`upside_above`（漲幅超過）、`downside_below`（跌幅超過）
+
+匯入後需設定 Telegram Bot API credentials（與每日警示、每週報告共用同一組）。
 
 ## Step 4: 設定通知（可選）
 

@@ -59,7 +59,8 @@ n8n_workflows/
 ├── portfolio-management.json    # 追蹤清單管理：add / remove / list
 ├── phase3-management.json       # Phase 3 管理：持倉 / 回測 / 警示（11 種操作）
 ├── weekly-valuation.json        # 每週排程：批次分析 + LLM 分類 + 回測摘要 + 投組績效
-└── daily-alerts.json            # 每日警示：收盤後檢查觸發條件 → Telegram 推播
+├── daily-alerts.json            # 每日警示：收盤後檢查觸發條件 → Telegram 推播
+└── telegram-bot.json            # Telegram Bot：對話式操作所有功能（20+ 指令）
 
 docs/
 └── n8n-setup-guide.md       # n8n 工作流匯入與設定指南
@@ -370,7 +371,7 @@ curl -X POST http://localhost:3000/api/alerts/check
 
 ## n8n 自動化工作流
 
-系統提供五個 n8n 工作流，已針對 **n8n v2.7.4 (Zeabur Self-Hosted)** 優化部署，實現完整的自動化估值分析管道。
+系統提供六個 n8n 工作流，已針對 **n8n v2.7.4 (Zeabur Self-Hosted)** 優化部署，實現完整的自動化估值分析管道。
 
 ### 系統架構流程圖
 
@@ -380,20 +381,19 @@ curl -X POST http://localhost:3000/api/alerts/check
 │                    (https://rlin9688.zeabur.app)                   │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
-│  ┌─────────────┐  ┌──────────────┐  ┌────────────────────────────┐ │
-│  │  Webhook     │  │  Webhook     │  │  Webhook                   │ │
-│  │  /analyze    │  │  /portfolio  │  │  /phase3                   │ │
-│  └──────┬───── ┘  └──────┬──────┘  └──────────┬─────────────────┘ │
-│         │                 │                     │                    │
-│         ▼                 ▼                     ▼                    │
-│  ┌─────────────┐  ┌──────────────┐  ┌────────────────────────────┐ │
-│  │ Code: 驗證   │  │ Code: 路由   │  │ Code: 路由邏輯              │ │
-│  │ + LLM 分類   │  │ add/remove/  │  │ holdings_add/remove/list   │ │
-│  │ + Guardrails │  │ list         │  │ alert_add/list/check/remove│ │
-│  └──────┬──────┘  └──────┬──────┘  │ backtest_run/summary/ticker │ │
-│         │                 │         │ analytics                    │ │
-│         │                 │         └──────────┬─────────────────┘ │
-│         ▼                 ▼                     ▼                    │
+│  ┌───────────┐ ┌────────────┐ ┌──────────────┐ ┌────────────────┐  │
+│  │ Webhook   │ │ Webhook    │ │ Webhook      │ │ Telegram Bot   │  │
+│  │ /analyze  │ │ /portfolio │ │ /phase3      │ │ 訊息觸發       │  │
+│  └─────┬─────┘ └─────┬──────┘ └──────┬───────┘ └───────┬────────┘  │
+│        │              │               │                  │           │
+│        ▼              ▼               ▼                  ▼           │
+│  ┌───────────┐ ┌────────────┐ ┌──────────────┐ ┌────────────────┐  │
+│  │ Code: 驗證│ │ Code: 路由 │ │ Code: 路由   │ │ Code: 解析指令 │  │
+│  │ +LLM 分類 │ │ add/remove │ │ holdings/    │ │ 20+ 指令路由   │  │
+│  │+Guardrails│ │ /list      │ │ alert/backtest│ │ + 格式化回覆   │  │
+│  └─────┬─────┘ └─────┬──────┘ │ /analytics   │ └───────┬────────┘  │
+│        │              │        └──────┬───────┘         │           │
+│        ▼              ▼               ▼                  ▼           │
 │  ┌──────────────────────────────────────────────────────────────┐  │
 │  │              HTTP Request (動態 method/url/sendBody)          │  │
 │  │              → $env.VALUATION_API_URL + apiPath              │  │
@@ -433,7 +433,7 @@ curl -X POST http://localhost:3000/api/alerts/check
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### 五大工作流
+### 六大工作流
 
 #### 1. 即時估值分析 (`on-demand-analysis.json`)
 
@@ -482,6 +482,23 @@ Cron 每日 18:00（收盤後）
   → POST /api/alerts/check
   → Code 格式化 + 過濾（無觸發則停止）
   → Telegram 推播觸發的警示
+```
+
+#### 6. Telegram Bot (`telegram-bot.json`)
+
+```
+Telegram 訊息觸發
+  → Code 解析指令（20+ 指令對應 API 路由）
+  → 動態 HTTP Request → Code 格式化回覆
+  → Telegram 回覆
+
+支援指令：
+  /analyze /a     — 即時估值分析
+  /add /remove /list — 追蹤清單管理
+  /hold /sell /holdings /analytics — 持倉管理
+  /alert /alerts /check /alert_off — 價格警示
+  /backtest /bt   — 回測驗證
+  /help           — 完整使用指南（含操作流程教學）
 ```
 
 ### 部署資訊
@@ -615,7 +632,7 @@ node src/batch-test.js 2330 2454 2317
 - **進度訊息與報告分離**：進度用 `stderr`、報告用 `stdout`，支援 pipe
 - **HTTP API 微服務**：Express + SQLite 持久化，支援單股/批次分析、歷史比較、追蹤清單
 - **LLM 智慧分類**：gpt-5-mini 動態分類 + 權重分配，Guardrails 雙層驗證確保安全回退
-- **n8n 工作流整合**：每週自動排程 + Webhook 按需查詢 + 每日警示推播，Telegram/Email 通知
+- **n8n 工作流整合**：每週自動排程 + Webhook 按需查詢 + 每日警示推播 + Telegram Bot 對話式操作
 - **回測準確度驗證**：漸進式回測（30d/90d/180d），計算 hit rate、MAE、模型排名
 - **智慧投組管理**：持倉追蹤、產業配置、風險指標、估值分組，整合至週報
 - **警示推播系統**：4 種觸發條件（價格/估值/分類變化），每日 Telegram 自動通知
