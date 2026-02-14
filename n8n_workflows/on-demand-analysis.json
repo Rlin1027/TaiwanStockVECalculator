@@ -5,9 +5,8 @@
       "parameters": {
         "httpMethod": "POST",
         "path": "analyze",
-        "options": {
-          "responseMode": "responseNode"
-        }
+        "responseMode": "lastNode",
+        "options": {}
       },
       "id": "b2c3d4e5-2222-4000-b000-000000000001",
       "name": "Webhook 接收查詢",
@@ -52,7 +51,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const analysisResult = $('呼叫估值 API').first().json;\nconst compareData = $input.first().json;\n\nconst ticker = analysisResult.ticker;\nconst classification = analysisResult.classification || {};\nconst wv = analysisResult.weightedValuation || {};\nconst perSummary = analysisResult.perSummary || {};\nconst dividendSummary = analysisResult.dividendSummary || {};\nconst dcfSummary = analysisResult.dcfSummary || {};\nconst capexSummary = analysisResult.capexSummary || {};\n\nconst stockData = {};\nstockData[ticker] = {\n  currentPrice: analysisResult.currentPrice,\n  deterministicType: classification.type,\n  dcf: wv.dcfFairValue,\n  per: wv.perFairValue,\n  pbr: wv.pbrFairValue,\n  div: wv.divFairValue,\n  capex: wv.capexFairValue,\n  evEbitda: wv.evEbitdaFairValue,\n  psr: wv.psrFairValue,\n  currentPE: perSummary.currentPE,\n  currentYield: dividendSummary.currentYield,\n  consecutiveYears: dividendSummary.consecutiveYears,\n  growthRate: dcfSummary.growthRate,\n  capExIntensity: capexSummary.capExIntensity\n};\n\nconst systemPrompt = [\n  '你是一位專業的股票估值分析師，負責判斷每檔股票最適合的估值方法組合。',\n  '',\n  '【估值方法與適用情境】',\n  '1. 金融業：pbr=0.7, div=0.3（金融股重視淨值與配息，dcf/per 不適用）',\n  '2. 週期性：evEbitda=0.4, pbr=0.3, per=0.2, psr=0.1（原物料/能源/鋼鐵/航運/營建等週期股，不看 dcf/div/capex）',\n  '3. 虧損成長股：psr=0.4, dcf=0.35, pbr=0.25（虧損且高成長，dcf 使用風險折現，不看 per/div/capex/evEbitda）',\n  '4. 成長股：dcf=0.5, per=0.3, psr=0.2（科技/生技等高成長股，不看 pbr/div/capex/evEbitda）',\n  '5. 存股：div=0.6, pbr=0.25, per=0.15（高殖利率穩定配息，不看 dcf/psr/capex/evEbitda）',\n  '6. 價值成長股：dcf=0.35, per=0.25, pbr=0.2, div=0.2（穩健成長且配息，不看 psr/capex/evEbitda）',\n  '7. 混合型：dcf=0.25, per=0.2, pbr=0.15, div=0.15, capex=0.15, evEbitda=0.1（多角化經營/轉型股，全模型均衡）',\n  '',\n  '【分類規則】',\n  '- 若 deterministicType=金融業 → 金融業',\n  '- 若屬於週期產業（原物料/能源/鋼鐵/航運/營建） → 週期性',\n  '- 若 EPS < 0 且 growthRate > 15% → 虧損成長股',\n  '- 若 growthRate > 15% 且 EPS > 0 → 成長股',\n  '- 若 currentYield > 5% 且 consecutiveYears >= 5 → 存股',\n  '- 若 growthRate 7-15% 且 currentYield 3-5% → 價值成長股',\n  '- 其他 → 混合型',\n  '',\n  '【輸出格式】',\n  'JSON 物件，key 為 ticker，value 包含：',\n  '- type: 分類名稱（7 選 1）',\n  '- description: 50 字內分類理由',\n  '- weights: 7 個模型權重（dcf, per, pbr, div, capex, evEbitda, psr），總和=1',\n  '- confidence: HIGH/MEDIUM/LOW',\n  '- narrative: 100 字內綜合說明（包含比價分析如有）'\n].join('\\n');\n\nlet userPrompt = `請分析以下股票的特性，判斷最適合的估值方法組合：\\n\\n${JSON.stringify(stockData, null, 2)}`;\n\nif (compareData && compareData.delta) {\n  const delta = compareData.delta;\n  userPrompt += `\\n\\n【比價分析】\\n本次分析與 ${delta.daysAgo} 天前相比：\\n價格變化：${delta.priceChange >= 0 ? '+' : ''}${(delta.priceChange * 100).toFixed(2)}%\\n估值方法：${delta.classificationChanged ? '已改變' : '維持不變'}\\n公允價區間變化：${delta.fairValueChange >= 0 ? '+' : ''}${(delta.fairValueChange * 100).toFixed(2)}%`;\n}\n\nconst openaiBody = {\n  model: 'gpt-4o',\n  response_format: { type: 'json_object' },\n  messages: [\n    { role: 'system', content: systemPrompt },\n    { role: 'user', content: userPrompt }\n  ],\n  temperature: 0.3\n};\n\nreturn [{ json: { openaiBody, analysisResult, compareData } }];"
+        "jsCode": "const analysisResult = $('呼叫估值 API').first().json;\nconst compareData = $input.first().json;\n\nconst ticker = analysisResult.ticker;\nconst classification = analysisResult.classification || {};\nconst wv = analysisResult.weightedValuation || {};\nconst perSummary = analysisResult.perSummary || {};\nconst dividendSummary = analysisResult.dividendSummary || {};\nconst dcfSummary = analysisResult.dcfSummary || {};\nconst capexSummary = analysisResult.capexSummary || {};\n\nconst stockData = {};\nstockData[ticker] = {\n  currentPrice: analysisResult.currentPrice,\n  deterministicType: classification.type,\n  dcf: wv.dcfFairValue,\n  per: wv.perFairValue,\n  pbr: wv.pbrFairValue,\n  div: wv.divFairValue,\n  capex: wv.capexFairValue,\n  evEbitda: wv.evEbitdaFairValue,\n  psr: wv.psrFairValue,\n  currentPE: perSummary.currentPE,\n  currentYield: dividendSummary.currentYield,\n  consecutiveYears: dividendSummary.consecutiveYears,\n  growthRate: dcfSummary.growthRate,\n  capExIntensity: capexSummary.capExIntensity\n};\n\nconst systemPrompt = [\n  '你是一位專業的股票估值分析師，負責判斷每檔股票最適合的估值方法組合。',\n  '',\n  '【估值方法與適用情境】',\n  '1. 金融業：pbr=0.7, div=0.3（金融股重視淨值與配息，dcf/per 不適用）',\n  '2. 週期性：evEbitda=0.4, pbr=0.3, per=0.2, psr=0.1（原物料/能源/鋼鐵/航運/營建等週期股，不看 dcf/div/capex）',\n  '3. 虧損成長股：psr=0.4, dcf=0.35, pbr=0.25（虧損且高成長，dcf 使用風險折現，不看 per/div/capex/evEbitda）',\n  '4. 成長股：dcf=0.5, per=0.3, psr=0.2（科技/生技等高成長股，不看 pbr/div/capex/evEbitda）',\n  '5. 存股：div=0.6, pbr=0.25, per=0.15（高殖利率穩定配息，不看 dcf/psr/capex/evEbitda）',\n  '6. 價值成長股：dcf=0.35, per=0.25, pbr=0.2, div=0.2（穩健成長且配息，不看 psr/capex/evEbitda）',\n  '7. 混合型：dcf=0.25, per=0.2, pbr=0.15, div=0.15, capex=0.15, evEbitda=0.1（多角化經營/轉型股，全模型均衡）',\n  '',\n  '【分類規則】',\n  '- 若 deterministicType=金融業 → 金融業',\n  '- 若屬於週期產業（原物料/能源/鋼鐵/航運/營建） → 週期性',\n  '- 若 EPS < 0 且 growthRate > 15% → 虧損成長股',\n  '- 若 growthRate > 15% 且 EPS > 0 → 成長股',\n  '- 若 currentYield > 5% 且 consecutiveYears >= 5 → 存股',\n  '- 若 growthRate 7-15% 且 currentYield 3-5% → 價值成長股',\n  '- 其他 → 混合型',\n  '',\n  '【輸出格式】',\n  'JSON 物件，key 為 ticker，value 包含：',\n  '- type: 分類名稱（7 選 1）',\n  '- description: 50 字內分類理由',\n  '- weights: 7 個模型權重（dcf, per, pbr, div, capex, evEbitda, psr），總和=1',\n  '- confidence: HIGH/MEDIUM/LOW',\n  '- narrative: 100 字內綜合說明（包含比價分析如有）'\n].join('\\n');\n\nlet userPrompt = `請分析以下股票的特性，判斷最適合的估值方法組合：\\n\\n${JSON.stringify(stockData, null, 2)}`;\n\nif (compareData && compareData.delta) {\n  const delta = compareData.delta;\n  userPrompt += `\\n\\n【比價分析】\\n本次分析與 ${delta.daysAgo} 天前相比：\\n價格變化：${delta.priceChange >= 0 ? '+' : ''}${(delta.priceChange * 100).toFixed(2)}%\\n估值方法：${delta.classificationChanged ? '已改變' : '維持不變'}\\n公允價區間變化：${delta.fairValueChange >= 0 ? '+' : ''}${(delta.fairValueChange * 100).toFixed(2)}%`;\n}\n\nconst openaiBody = {\n  model: 'gpt-5-mini',\n  response_format: { type: 'json_object' },\n  messages: [\n    { role: 'system', content: systemPrompt },\n    { role: 'user', content: userPrompt }\n  ],\n};\n\nreturn [{ json: { openaiBody, analysisResult, compareData } }];"
       },
       "id": "b2c3d4e5-2222-4000-b000-000000000006",
       "name": "準備 LLM Prompt",
@@ -113,18 +112,6 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [1750, 300]
-    },
-    {
-      "parameters": {
-        "respondWith": "json",
-        "responseBody": "={{ JSON.stringify($json) }}",
-        "options": {}
-      },
-      "id": "b2c3d4e5-2222-4000-b000-000000000004",
-      "name": "回傳分析結果",
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.1,
-      "position": [2000, 300]
     }
   ],
   "connections": {
@@ -204,24 +191,13 @@
           }
         ]
       ]
-    },
-    "Apply LLM Weights": {
-      "main": [
-        [
-          {
-            "node": "回傳分析結果",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
     }
   },
   "active": false,
   "settings": {
     "executionOrder": "v1"
   },
-  "versionId": "1",
+  "versionId": "2",
   "meta": {
     "instanceId": ""
   },

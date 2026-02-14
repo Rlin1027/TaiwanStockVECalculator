@@ -55,9 +55,11 @@ src/
     └── formatters.js        # 輸出格式化：Terminal / Markdown / JSON
 
 n8n_workflows/
-├── weekly-valuation.json    # 每週排程：批次分析 + LLM 分類 + 回測摘要 + 投組績效
-├── on-demand-analysis.json  # 按需查詢：Webhook 觸發 + LLM 分類 + 即時回傳
-└── daily-alerts.json        # 每日警示：收盤後檢查觸發條件 → Telegram 推播
+├── on-demand-analysis.json      # 按需查詢：Webhook 觸發 + LLM 分類 + 即時回傳
+├── portfolio-management.json    # 追蹤清單管理：add / remove / list
+├── phase3-management.json       # Phase 3 管理：持倉 / 回測 / 警示（11 種操作）
+├── weekly-valuation.json        # 每週排程：批次分析 + LLM 分類 + 回測摘要 + 投組績效
+└── daily-alerts.json            # 每日警示：收盤後檢查觸發條件 → Telegram 推播
 
 docs/
 └── n8n-setup-guide.md       # n8n 工作流匯入與設定指南
@@ -189,7 +191,7 @@ RPS = 年度營收 / 流通股數
 | 虧損成長股 | 0% | 0% | 10% | 0% | 10% | 20% | 60% |
 | 混合型 | 20% | 20% | 10% | 15% | 10% | 15% | 10% |
 
-**LLM 智慧分類（Phase 2）**：透過 n8n 工作流呼叫 GPT-4o，根據七模型數據和歷史趨勢動態判斷分類與權重：
+**LLM 智慧分類（Phase 2）**：透過 n8n 工作流呼叫 gpt-5-mini，根據七模型數據和歷史趨勢動態判斷分類與權重：
 
 - 分析每股的基本面特徵（成長率、殖利率、PE、產業等）
 - 動態分配 7 個模型權重（每個 weight 上限 50%，加總 = 100%）
@@ -368,37 +370,136 @@ curl -X POST http://localhost:3000/api/alerts/check
 
 ## n8n 自動化工作流
 
-系統提供三個 n8n 工作流，實現完整的自動化估值分析管道：
+系統提供五個 n8n 工作流，已針對 **n8n v2.7.4 (Zeabur Self-Hosted)** 優化部署，實現完整的自動化估值分析管道。
 
-### 每週估值報告 (`weekly-valuation.json`)
+### 系統架構流程圖
 
 ```
-Cron 每週一 02:00
-  → 取得追蹤清單 → 批次七模型分析
-  → GPT-4o 智慧分類 + 權重分配
-  → Guardrails 驗證 → LLM 權重重新加權
-  → 取得回測摘要 + 投組績效          ← Phase 3 新增
-  → Telegram 摘要（含回測 + 投組區塊）+ Email 詳細報告
+┌─────────────────────────────────────────────────────────────────────┐
+│                         n8n Workflow Engine                         │
+│                    (https://rlin9688.zeabur.app)                   │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  ┌─────────────┐  ┌──────────────┐  ┌────────────────────────────┐ │
+│  │  Webhook     │  │  Webhook     │  │  Webhook                   │ │
+│  │  /analyze    │  │  /portfolio  │  │  /phase3                   │ │
+│  └──────┬───── ┘  └──────┬──────┘  └──────────┬─────────────────┘ │
+│         │                 │                     │                    │
+│         ▼                 ▼                     ▼                    │
+│  ┌─────────────┐  ┌──────────────┐  ┌────────────────────────────┐ │
+│  │ Code: 驗證   │  │ Code: 路由   │  │ Code: 路由邏輯              │ │
+│  │ + LLM 分類   │  │ add/remove/  │  │ holdings_add/remove/list   │ │
+│  │ + Guardrails │  │ list         │  │ alert_add/list/check/remove│ │
+│  └──────┬──────┘  └──────┬──────┘  │ backtest_run/summary/ticker │ │
+│         │                 │         │ analytics                    │ │
+│         │                 │         └──────────┬─────────────────┘ │
+│         ▼                 ▼                     ▼                    │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │              HTTP Request (動態 method/url/sendBody)          │  │
+│  │              → $env.VALUATION_API_URL + apiPath              │  │
+│  └──────────────────────────┬───────────────────────────────────┘  │
+│                              │                                      │
+│  ┌───────────────┐  ┌───────┴───────┐                              │
+│  │ Schedule       │  │               │                              │
+│  │ 每週一 02:00   │──▶ 批次估值分析  │                              │
+│  │ 每日   18:00   │──▶ 警示檢查     │                              │
+│  └───────────────┘  └───────┬───────┘                              │
+│                              │                                      │
+│                              ▼                                      │
+│                    ┌──────────────────┐                             │
+│                    │  Telegram / Email │                             │
+│                    │  通知推播         │                             │
+│                    └──────────────────┘                             │
+└─────────────────────────────────────────────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Valuation API (Zeabur)                         │
+│             (https://valuation-api-internal.zeabur.app)             │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  /api/analyze/:ticker    七模型估值分析                              │
+│  /api/portfolio          追蹤清單 CRUD                               │
+│  /api/portfolio/holdings 持倉管理                                    │
+│  /api/portfolio/analytics 投組績效分析                               │
+│  /api/alerts             警示 CRUD + 觸發檢查                       │
+│  /api/backtest           回測驗證 + 準確度統計                       │
+│  /api/resynthesize       LLM 權重重新合成                            │
+│                                                                     │
+│  ┌──────────┐  ┌───────────┐  ┌──────────┐                        │
+│  │ FinMind  │  │ OpenAI    │  │ SQLite   │                        │
+│  │ API      │  │ gpt-5-mini│  │ (Volume) │                        │
+│  └──────────┘  └───────────┘  └──────────┘                        │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-### 按需查詢 (`on-demand-analysis.json`)
+### 五大工作流
+
+#### 1. 即時估值分析 (`on-demand-analysis.json`)
 
 ```
 POST /webhook/analyze {"ticker": "2330"}
-  → 七模型分析 → 歷史差異比較
-  → GPT-4o 分類 → Guardrails 驗證
+  → 驗證 Ticker → 七模型分析 → 歷史差異比較
+  → gpt-5-mini 分類 → Guardrails 驗證
   → LLM 重新加權 → 即時回傳結果
 ```
 
-### 每日警示推播 (`daily-alerts.json`)
+#### 2. 追蹤清單管理 (`portfolio-management.json`)
+
+```
+POST /webhook/portfolio {"action": "add", "tickers": ["2330"]}
+POST /webhook/portfolio {"action": "remove", "tickers": ["2330"]}
+POST /webhook/portfolio {"action": "list"}
+  → Code 路由邏輯 → 動態 HTTP Request → API 回傳結果
+```
+
+#### 3. Phase 3 管理 (`phase3-management.json`)
+
+```
+POST /webhook/phase3 {"action": "<action>", ...params}
+  支援 11 種操作：
+  - 持倉：holdings_add / holdings_remove / holdings_list / analytics
+  - 警示：alert_add / alert_list / alert_check / alert_remove
+  - 回測：backtest_run / backtest_summary / backtest_ticker
+  → Code 路由邏輯 → 動態 HTTP Request (method/url/sendBody) → API 回傳
+```
+
+#### 4. 每週估值報告 (`weekly-valuation.json`)
+
+```
+Cron 每週一 02:00
+  → 取得追蹤清單 → 分批七模型分析
+  → gpt-5-mini 智慧分類 + 權重分配
+  → Guardrails 驗證 → LLM 權重重新加權
+  → 取得回測摘要 + 投組績效
+  → Telegram 摘要 + Email HTML 詳細報告
+```
+
+#### 5. 每日警示推播 (`daily-alerts.json`)
 
 ```
 Cron 每日 18:00（收盤後）
   → POST /api/alerts/check
-  → 過濾已觸發的警示
-  → 格式化 Telegram 訊息（含觸發類型圖示）
-  → 有觸發才發送 Telegram 推播
+  → Code 格式化 + 過濾（無觸發則停止）
+  → Telegram 推播觸發的警示
 ```
+
+### 部署資訊
+
+| 元件 | 平台 | URL |
+|:-----|:-----|:----|
+| Valuation API | Zeabur (Docker) | `https://valuation-api-internal.zeabur.app` |
+| n8n | Zeabur (Self-Hosted) | `https://rlin9688.zeabur.app` |
+| SQLite 持久化 | Zeabur Volume | Mount: `/data`, env: `DB_PATH=/data/valuation.db` |
+
+### n8n 相容性注意事項
+
+針對 n8n v2.7.4 (Self-Hosted) 的已知限制：
+
+- **Switch / If / Respond to Webhook 節點**：匯入時會報 "Could not find property option"，統一用 Code 節點替代
+- **GET + sendBody: true**：會造成執行錯誤，需用動態表達式 `={{ $json.apiMethod === 'POST' }}` 控制
+- **gpt-5-mini**：不支援自訂 temperature，僅使用預設值
+- **環境變數**：使用 `$env` 存取（需設定 `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`）
 
 ### 設定指南
 
@@ -513,7 +614,7 @@ node src/batch-test.js 2330 2454 2317
 - **三種輸出格式**：Terminal（ANSI 彩色）、Markdown（GitHub 可讀）、JSON（程式整合）
 - **進度訊息與報告分離**：進度用 `stderr`、報告用 `stdout`，支援 pipe
 - **HTTP API 微服務**：Express + SQLite 持久化，支援單股/批次分析、歷史比較、追蹤清單
-- **LLM 智慧分類**：GPT-4o 動態分類 + 權重分配，Guardrails 雙層驗證確保安全回退
+- **LLM 智慧分類**：gpt-5-mini 動態分類 + 權重分配，Guardrails 雙層驗證確保安全回退
 - **n8n 工作流整合**：每週自動排程 + Webhook 按需查詢 + 每日警示推播，Telegram/Email 通知
 - **回測準確度驗證**：漸進式回測（30d/90d/180d），計算 hit rate、MAE、模型排名
 - **智慧投組管理**：持倉追蹤、產業配置、風險指標、估值分組，整合至週報
