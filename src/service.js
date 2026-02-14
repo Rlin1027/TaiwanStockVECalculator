@@ -12,6 +12,9 @@ import { analyzePSR } from './models/psr.js';
 import { analyzeRevenueMomentum } from './models/momentum.js';
 import { synthesize } from './report/synthesizer.js';
 import { toJSON } from './report/formatters.js';
+import { FEEDBACK_CONFIG } from './config.js';
+import { blendWeights, getFeedbackForType, refreshFeedbackCache, resynthesizeWithFeedback } from './feedback/index.js';
+import { getAccuracyChecksForFeedback } from './db.js';
 
 /**
  * 分析單一股票，回傳與 toJSON(synthesize(...)) 相同的結構
@@ -139,6 +142,36 @@ export async function analyzeStock(ticker) {
   // 回傳與 toJSON() 相同的結構（JSON 物件），附加公司名稱
   const result = JSON.parse(toJSON(report));
   result.stockName = data.stockInfo?.stock_name || '';
+
+  // ── 回饋權重注入 ──
+  if (FEEDBACK_CONFIG.enabled) {
+    try {
+      const classType = result.classification?.type;
+      const feedbackEntry = classType ? getFeedbackForType(classType) : null;
+
+      if (feedbackEntry) {
+        const blendResult = blendWeights(result.weightedValuation, feedbackEntry, {
+          blendRatio: FEEDBACK_CONFIG.blendRatio,
+        });
+        if (blendResult) {
+          const enhanced = resynthesizeWithFeedback(result, blendResult, {
+            source: 'backtest-feedback',
+            classificationType: classType,
+            blendRatio: blendResult.blendRatio,
+            sampleCounts: feedbackEntry.sampleCounts,
+            totalChecks: feedbackEntry.totalChecks,
+          });
+          return enhanced;
+        }
+      }
+
+      // 回饋不可用 — 標記 metadata 但不改結果
+      result.feedbackMetadata = { source: 'default-only', reason: feedbackEntry ? '混合失敗' : '樣本不足或快取未初始化' };
+    } catch {
+      result.feedbackMetadata = { source: 'default-only', reason: '回饋系統錯誤' };
+    }
+  }
+
   return result;
 }
 
@@ -153,6 +186,14 @@ export async function analyzeBatch(tickers, options = {}) {
   const delayMs = options.delayMs ?? parseInt(process.env.BATCH_DELAY_MS || '3000', 10);
   const results = [];
   const errors = [];
+
+  // 批次開始前 refresh 回饋快取（避免每檔重算）
+  if (FEEDBACK_CONFIG.enabled) {
+    try {
+      const allChecks = getAccuracyChecksForFeedback();
+      if (allChecks.length > 0) refreshFeedbackCache(allChecks);
+    } catch { /* 回饋快取失敗不影響批次分析 */ }
+  }
 
   for (let i = 0; i < tickers.length; i++) {
     const ticker = tickers[i];

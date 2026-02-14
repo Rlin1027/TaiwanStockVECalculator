@@ -18,6 +18,9 @@ import { calculateSummary } from './backtest/metrics.js';
 import { calculatePortfolioAnalytics } from './portfolio/analytics.js';
 import { checkAlerts } from './portfolio/alerts.js';
 import { fetchStockPrice } from './api/finmind.js';
+import { FEEDBACK_CONFIG } from './config.js';
+import { refreshFeedbackCache, getCacheStatus, blendWeights } from './feedback/index.js';
+import { getAccuracyChecksForFeedback } from './db.js';
 
 const app = express();
 
@@ -299,6 +302,14 @@ app.post('/api/backtest/run', async (req, res) => {
     const allChecks = getAccuracySummary();
     const summary = calculateSummary(allChecks);
 
+    // 回測完成後自動刷新回饋快取
+    if (FEEDBACK_CONFIG.enabled) {
+      try {
+        const feedbackChecks = getAccuracyChecksForFeedback();
+        if (feedbackChecks.length > 0) refreshFeedbackCache(feedbackChecks);
+      } catch { /* 回饋快取刷新失敗不影響回測結果 */ }
+    }
+
     res.json({ ...result, summary });
   } catch (err) {
     res.status(500).json({ error: 'Backtest Failed', message: err.message });
@@ -332,6 +343,101 @@ app.get('/api/backtest/:ticker', (req, res) => {
     res.status(500).json({ error: 'Query Failed', message: err.message });
   }
 });
+
+// ── 回饋權重 API ──
+
+// 查看所有分類類型的回饋權重
+app.get('/api/feedback/weights', (req, res) => {
+  try {
+    const status = getCacheStatus();
+    if (!status.initialized || status.isStale) {
+      // lazy refresh
+      const allChecks = getAccuracyChecksForFeedback();
+      if (allChecks.length > 0) {
+        refreshFeedbackCache(allChecks);
+        const refreshed = getCacheStatus();
+        return res.json(refreshed);
+      }
+      return res.json({ ...status, message: '無回測數據可用於計算回饋權重' });
+    }
+    res.json(status);
+  } catch (err) {
+    res.status(500).json({ error: 'Query Failed', message: err.message });
+  }
+});
+
+// 查看特定類型的詳細回饋權重
+app.get('/api/feedback/weights/:type', (req, res) => {
+  const { type } = req.params;
+  try {
+    const status = getCacheStatus();
+    if (!status.initialized || status.isStale) {
+      const allChecks = getAccuracyChecksForFeedback();
+      if (allChecks.length > 0) refreshFeedbackCache(allChecks);
+    }
+
+    const cacheStatus = getCacheStatus();
+    const feedbackForType = cacheStatus.feedbackByType?.[type];
+    if (!feedbackForType) {
+      return res.status(404).json({
+        error: 'Not Found',
+        message: `無 "${type}" 類型的回饋數據（可能樣本不足 ${FEEDBACK_CONFIG.minSamples} 筆）`,
+        availableTypes: cacheStatus.coveredTypes || [],
+      });
+    }
+
+    // 取得預設權重做對比
+    const defaultWeights = getDefaultWeightsForType(type);
+    const blendResult = defaultWeights
+      ? blendWeights(defaultWeights, feedbackForType, { blendRatio: FEEDBACK_CONFIG.blendRatio })
+      : null;
+
+    res.json({
+      type,
+      feedback: feedbackForType,
+      default: defaultWeights,
+      blended: blendResult?.weights || null,
+      blendRatio: FEEDBACK_CONFIG.blendRatio,
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Query Failed', message: err.message });
+  }
+});
+
+// 強制重算回饋快取
+app.post('/api/feedback/refresh', (req, res) => {
+  try {
+    const { minSamples, blendRatio } = req.body || {};
+    const options = {};
+    if (minSamples != null) options.minSamples = minSamples;
+    if (blendRatio != null) options.blendRatio = blendRatio;
+
+    const allChecks = getAccuracyChecksForFeedback();
+    if (allChecks.length === 0) {
+      return res.json({ message: '無回測數據', totalChecks: 0, feedbackByType: {} });
+    }
+
+    refreshFeedbackCache(allChecks, options);
+    const status = getCacheStatus();
+    res.json({ message: '回饋快取已重算', ...status });
+  } catch (err) {
+    res.status(500).json({ error: 'Refresh Failed', message: err.message });
+  }
+});
+
+// Helper: 取得特定分類類型的預設權重（用於對比展示）
+function getDefaultWeightsForType(type) {
+  const defaults = {
+    '金融業':     { dcfWeight: 0.00, perWeight: 0.25, pbrWeight: 0.35, divWeight: 0.28, capexWeight: 0.02, evEbitdaWeight: 0.10, psrWeight: 0.00 },
+    '週期性':     { dcfWeight: 0.15, perWeight: 0.10, pbrWeight: 0.20, divWeight: 0.15, capexWeight: 0.15, evEbitdaWeight: 0.20, psrWeight: 0.05 },
+    '虧損成長股': { dcfWeight: 0.15, perWeight: 0.00, pbrWeight: 0.05, divWeight: 0.00, capexWeight: 0.10, evEbitdaWeight: 0.30, psrWeight: 0.40 },
+    '成長股':     { dcfWeight: 0.35, perWeight: 0.25, pbrWeight: 0.00, divWeight: 0.12, capexWeight: 0.08, evEbitdaWeight: 0.10, psrWeight: 0.10 },
+    '存股':       { dcfWeight: 0.08, perWeight: 0.18, pbrWeight: 0.08, divWeight: 0.45, capexWeight: 0.06, evEbitdaWeight: 0.10, psrWeight: 0.05 },
+    '價值成長股': { dcfWeight: 0.20, perWeight: 0.18, pbrWeight: 0.06, divWeight: 0.25, capexWeight: 0.11, evEbitdaWeight: 0.12, psrWeight: 0.08 },
+    '混合型':     { dcfWeight: 0.20, perWeight: 0.20, pbrWeight: 0.06, divWeight: 0.22, capexWeight: 0.10, evEbitdaWeight: 0.12, psrWeight: 0.10 },
+  };
+  return defaults[type] || null;
+}
 
 // ── Phase 3: 投組持倉管理 ──
 

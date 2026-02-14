@@ -230,6 +230,19 @@ export function updateAccuracyCheck(id, updates) {
   return stmt.run(...values);
 }
 
+// ── 回饋系統用查詢 ──
+
+export function getAccuracyChecksForFeedback() {
+  const rows = db.prepare(
+    'SELECT * FROM accuracy_checks WHERE model_errors_json IS NOT NULL ORDER BY analysis_date DESC'
+  ).all();
+  return rows.map(row => ({
+    ...row,
+    model_fair_values_json: row.model_fair_values_json ? JSON.parse(row.model_fair_values_json) : null,
+    model_errors_json: row.model_errors_json ? JSON.parse(row.model_errors_json) : null,
+  }));
+}
+
 // ── Phase 3: 投組持倉管理 ──
 
 export function upsertHolding(ticker, { shares = 0, costBasis = 0, notes = '' } = {}) {

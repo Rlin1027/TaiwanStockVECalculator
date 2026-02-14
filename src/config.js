@@ -103,6 +103,16 @@ export const SECTOR_GROWTH_CAP = {
   'default': 0.30,
 };
 
+/** 回測回饋權重設定 */
+export const FEEDBACK_CONFIG = {
+  enabled: process.env.FEEDBACK_ENABLED !== 'false',
+  minSamples: parseInt(process.env.FEEDBACK_MIN_SAMPLES || '10', 10),
+  blendRatio: parseFloat(process.env.FEEDBACK_BLEND_RATIO || '0.30'),
+  maxWeight: 0.50,
+  cacheStaleMs: 24 * 60 * 60 * 1000,
+  horizonWeights: { mae30d: 0.25, mae90d: 0.50, mae180d: 0.25 },
+};
+
 /** FinMind API 設定 */
 export const API_CONFIG = {
   baseUrl: 'https://api.finmindtrade.com/api/v4/data',
