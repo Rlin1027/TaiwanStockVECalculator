@@ -51,24 +51,7 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', uptime: process.uptime(), version: '1.0.0' });
 });
 
-// 單股分析
-app.post('/api/analyze/:ticker', async (req, res) => {
-  const { ticker } = req.params;
-
-  if (!isValidTicker(ticker)) {
-    return res.status(400).json({ error: 'Bad Request', message: `Invalid ticker format: ${ticker} (expected 4-6 digits)` });
-  }
-
-  try {
-    const result = await analyzeStock(ticker);
-    saveAnalysis(ticker, result);
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ error: 'Analysis Failed', message: err.message });
-  }
-});
-
-// 批次分析
+// 批次分析（必須在 :ticker 路由之前，否則 "batch" 會被當成 ticker）
 app.post('/api/analyze/batch', async (req, res) => {
   const { tickers } = req.body || {};
 
@@ -101,6 +84,23 @@ app.post('/api/analyze/batch', async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: 'Batch Analysis Failed', message: err.message });
+  }
+});
+
+// 單股分析
+app.post('/api/analyze/:ticker', async (req, res) => {
+  const { ticker } = req.params;
+
+  if (!isValidTicker(ticker)) {
+    return res.status(400).json({ error: 'Bad Request', message: `Invalid ticker format: ${ticker} (expected 4-6 digits)` });
+  }
+
+  try {
+    const result = await analyzeStock(ticker);
+    saveAnalysis(ticker, result);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: 'Analysis Failed', message: err.message });
   }
 });
 
