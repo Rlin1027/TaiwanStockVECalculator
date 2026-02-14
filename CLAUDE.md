@@ -48,7 +48,7 @@ FinMind API (8 datasets in parallel)
 - **`src/service.js`** — 核心分析服務，`analyzeStock()` 和 `analyzeBatch()` 供 CLI 與 API 共用。所有七模型在此執行並有獨立 try/catch fallback。
 - **`src/api/finmind.js`** — FinMind API 封裝，`fetchAllData()` 用 `Promise.all` 並行抓取 8 種數據集（股價、財報、現金流、股利、PER/PBR、月營收、資產負債表、公司資訊）。每個 request 有 30 秒 AbortController timeout。
 - **`src/report/synthesizer.js`** — 七模型綜合引擎。`classifyStock()` 依產業和財務特徵分為 7 類（金融業/成長股/存股/價值成長股/週期性/虧損成長股/混合型），每類有預設權重。`calculateWeightedValuation()` 依模型可用性和信心度動態調整權重後正規化。
-- **`src/config.js`** — 集中設定：產業 WACC 對照表、TICKER_SECTOR 手動分類、INDUSTRY_SECTOR_MAP 自動分類、DCF/股利參數。
+- **`src/config.js`** — 集中設定：產業 WACC 對照表、TICKER_SECTOR 手動分類、INDUSTRY_SECTOR_MAP 自動分類、DCF/股利參數、FEEDBACK_CONFIG 回饋調權設定。
 - **`src/db.js`** — SQLite 持久化（better-sqlite3，WAL mode）。5 個 tables：analyses、portfolio、accuracy_checks、portfolio_holdings、alerts。DB 路徑由 `DB_PATH` env 控制，預設 `./data/valuation.db`。
 
 ### Seven Models (`src/models/`)
@@ -72,6 +72,17 @@ FinMind API (8 datasets in parallel)
 - **`guardrails.js`** — 驗證 LLM 輸出：type 必須為 7 種有效分類之一、每個 weight ∈ [0, 0.50]、不可用模型 weight 必須 = 0、加總 ≈ 1.0（±0.02 容差）。
 - **`resynthesize.js`** — 用 LLM 權重重新計算加權合理價，保留原始確定性結果於 `deterministicClassification` / `deterministicRecommendation` / `deterministicWeightedValuation` 欄位。
 
+### Feedback System (`src/feedback/`)
+
+回測回饋調權系統，形成「預測 → 回測 → 回饋 → 優化」閉環：
+
+- **`adaptive-weights.js`** — `computeFeedbackByType()` 依回測 MAE 計算各分類（成長股/存股等）的自適應權重。多時間維度加權：30d 25% + 90d 50% + 180d 25%。`blendWeights()` 混合回饋與預設權重（預設 30:70）。
+- **`cache.js`** — 記憶體快取管理。`refreshFeedbackCache()` 重算，`getFeedbackForType()` 取特定分類，`getCacheStatus()` 回傳狀態。24h 自動過期 + lazy refresh。
+- **`resynthesize-feedback.js`** — `resynthesizeWithFeedback()` 用混合權重重新計算加權合理價。輸出含 `feedbackMetadata`（source、blendRatio、sampleCounts）。保留原始結果於 `deterministicWeightedValuation`。
+- **`index.js`** — 統一匯出 + `getDefaultWeightsForType()` 從 synthesizer 的 CLASS_WEIGHTS 取預設權重。
+
+**注入點**：`service.js` 的 `analyzeStock()` 自動注入回饋權重，`analyzeBatch()` 批次前刷新快取。`server.js` 的 `POST /api/backtest/run` 回測後自動觸發 `refreshFeedbackCache()`。
+
 ### Phase 3 Modules
 
 - **`src/backtest/`** — 漸進式回測：30d 新建 → 90d/180d 回填。`engine.js` 取未回測分析並比對實際股價，`metrics.js` 計算 hit rate、MAE、模型排名。
@@ -79,15 +90,16 @@ FinMind API (8 datasets in parallel)
 
 ### n8n Workflows (`n8n_workflows/`)
 
-五個 JSON workflow 檔供 n8n 匯入，已針對 n8n v2.7.4 (Zeabur Self-Hosted) 優化：
+六個 JSON workflow 檔供 n8n 匯入，已針對 n8n v2.7.4 (Zeabur Self-Hosted) 優化：
 
 | Workflow | 觸發方式 | 說明 |
 |----------|---------|------|
 | `on-demand-analysis.json` | POST `/webhook/analyze` | 即時七模型 + LLM 分類 |
 | `portfolio-management.json` | POST `/webhook/portfolio` | 追蹤清單 CRUD (add/remove/list) |
 | `phase3-management.json` | POST `/webhook/phase3` | 持倉/回測/警示 11 種操作 |
-| `weekly-valuation.json` | Cron 每週一 02:00 | 批次分析 + LLM + Telegram/Email 報告 |
+| `weekly-valuation.json` | Cron 每週一 02:00 | 批次分析 + 回測掃描 + 回饋調權 + LLM + Telegram/Email 報告 |
 | `daily-alerts.json` | Cron 每日 18:00 | 警示檢查 + Telegram 推播 |
+| `telegram-bot.json` | Telegram 訊息觸發 | 對話式操作所有功能（20+ 指令） |
 
 **n8n 相容性注意**：Switch/If/Respond to Webhook 節點在 n8n v2.7.4 匯入會失敗，所有路由邏輯統一用 Code 節點實現。GET 請求不可帶 `sendBody: true`，需用動態表達式 `={{ $json.apiMethod === 'POST' }}`。設定指南在 `docs/n8n-setup-guide.md`。
 
@@ -99,6 +111,8 @@ FinMind API (8 datasets in parallel)
 - 批次分析有速率控制（`BATCH_DELAY_MS`，預設 3000ms）
 - API 可選 Bearer token 或 `x-api-key` header 驗證（`API_KEY` env），health check 跳過驗證
 - 所有新功能（Phase 2-3）透過新模組 + 新端點實現，不修改核心計算邏輯（零侵入式）
+- 回饋調權透過 `service.js` 注入，不修改 `synthesizer.js` 的預設權重邏輯
+- 分析結果含 `feedbackMetadata` 欄位標記調權來源（`backtest-feedback` 或 `default-only`）
 
 ## QA Testing
 
@@ -116,3 +130,6 @@ QA benchmark 使用 0050 ETF 50 檔成份股，四層驗證：
 - `FINMIND_API_TOKEN` — FinMind API token（必須，免費帳號 600 calls/hour）
 - `DB_PATH` — SQLite 路徑（預設 `./data/valuation.db`）
 - `BATCH_DELAY_MS` / `BATCH_SIZE` — 批次分析速率控制
+- `FEEDBACK_ENABLED` — 回饋調權開關（預設 `true`）
+- `FEEDBACK_MIN_SAMPLES` — 各分類最少回測樣本數（預設 `10`）
+- `FEEDBACK_BLEND_RATIO` — 回饋權重佔比 0–1（預設 `0.30`）
