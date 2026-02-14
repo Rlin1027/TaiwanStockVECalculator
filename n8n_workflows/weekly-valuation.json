@@ -32,13 +32,25 @@
     },
     {
       "parameters": {
-        "jsCode": "const data = $input.first().json;\nconst tickers = (data.tickers || []).map(t => t.ticker || t);\n\nif (tickers.length === 0) {\n  throw new Error('追蹤清單為空，請先新增股票');\n}\n\nreturn [{ json: { tickers } }];"
+        "jsCode": "const data = $input.first().json;\nconst tickers = (data.tickers || []).map(t => t.ticker || t);\n\nif (tickers.length === 0) {\n  throw new Error('追蹤清單為空，請先新增股票');\n}\n\n// 拆成每 10 檔一批\nconst chunkSize = 10;\nconst chunks = [];\nfor (let i = 0; i < tickers.length; i += chunkSize) {\n  chunks.push(tickers.slice(i, i + chunkSize));\n}\n\nreturn chunks.map((chunk, idx) => ({\n  json: {\n    batchIndex: idx + 1,\n    totalBatches: chunks.length,\n    tickers: chunk\n  }\n}));"
       },
       "id": "a1b2c3d4-1111-4000-a000-000000000003",
       "name": "準備批次請求",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "options": {
+          "reset": false
+        }
+      },
+      "id": "a1b2c3d4-1111-4000-a000-000000000020",
+      "name": "分批處理",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [750, 300]
     },
     {
       "parameters": {
@@ -55,17 +67,28 @@
       "name": "批次估值分析",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [750, 300]
+      "position": [1000, 500]
     },
     {
       "parameters": {
-        "jsCode": "const data = $input.first().json;\nconst allResults = data.results || [];\nconst errors = data.errors || [];\n\nconst now = new Date();\nconst dateStr = `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')}`;\n\nconst buyStocks = allResults.filter(r => r.recommendation?.action === 'BUY' || r.recommendation?.action === 'STRONG_BUY');\nconst sellStocks = allResults.filter(r => r.recommendation?.action === 'SELL' || r.recommendation?.action === 'STRONG_SELL');\nconst holdStocks = allResults.filter(r => r.recommendation?.action === 'HOLD');\n\nbuyStocks.sort((a, b) => (b.upside || 0) - (a.upside || 0));\n\nreturn [{\n  json: {\n    date: dateStr,\n    totalStocks: allResults.length,\n    buyCount: buyStocks.length,\n    sellCount: sellStocks.length,\n    holdCount: holdStocks.length,\n    buyStocks,\n    sellStocks,\n    holdStocks,\n    allResults,\n    errors,\n    top5Buy: buyStocks.slice(0, 5)\n  }\n}];"
+        "amount": 420
+      },
+      "id": "a1b2c3d4-1111-4000-a000-000000000021",
+      "name": "等待 7 分鐘",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1250, 500],
+      "webhookId": "batch-wait-webhook-id"
+    },
+    {
+      "parameters": {
+        "jsCode": "// 收集所有批次的結果\nconst allBatchResponses = $('批次估值分析').all();\n\nlet allResults = [];\nlet allErrors = [];\n\nallBatchResponses.forEach(item => {\n  const data = item.json;\n  if (data.results) allResults = allResults.concat(data.results);\n  if (data.errors) allErrors = allErrors.concat(data.errors);\n});\n\nconst now = new Date();\nconst dateStr = `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')}`;\n\nconst buyStocks = allResults\n  .filter(r => r.recommendation?.action === 'BUY' || r.recommendation?.action === 'STRONG_BUY')\n  .sort((a, b) => (b.recommendation?.upside || 0) - (a.recommendation?.upside || 0));\n\nconst sellStocks = allResults\n  .filter(r => r.recommendation?.action === 'SELL' || r.recommendation?.action === 'STRONG_SELL');\n\nconst holdStocks = allResults\n  .filter(r => r.recommendation?.action === 'HOLD');\n\nreturn [{\n  json: {\n    date: dateStr,\n    totalStocks: allResults.length,\n    buyCount: buyStocks.length,\n    sellCount: sellStocks.length,\n    holdCount: holdStocks.length,\n    buyStocks,\n    sellStocks,\n    holdStocks,\n    allResults,\n    errors: allErrors,\n    top5Buy: buyStocks.slice(0, 5)\n  }\n}];"
       },
       "id": "a1b2c3d4-1111-4000-a000-000000000006",
       "name": "合併結果與統計",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1000, 300]
+      "position": [1000, 100]
     },
     {
       "parameters": {
@@ -75,7 +98,7 @@
       "name": "準備 LLM Prompt",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1250, 300]
+      "position": [1250, 100]
     },
     {
       "parameters": {
@@ -106,7 +129,7 @@
       "name": "LLM 分類",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1500, 300]
+      "position": [1500, 100]
     },
     {
       "parameters": {
@@ -116,7 +139,7 @@
       "name": "Guardrails 驗證",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1750, 300]
+      "position": [1750, 100]
     },
     {
       "parameters": {
@@ -133,7 +156,7 @@
       "name": "Apply LLM Weights",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [2000, 300]
+      "position": [2000, 100]
     },
     {
       "parameters": {
@@ -145,7 +168,7 @@
       "name": "取得回測摘要",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [2250, 300]
+      "position": [2250, 100]
     },
     {
       "parameters": {
@@ -157,7 +180,7 @@
       "name": "取得投組績效",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [2500, 300]
+      "position": [2500, 100]
     },
     {
       "parameters": {
@@ -167,7 +190,7 @@
       "name": "產生 Telegram 訊息",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2750, 150]
+      "position": [2750, -50]
     },
     {
       "parameters": {
@@ -177,7 +200,7 @@
       "name": "產生 Email HTML 報告",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [2750, 450]
+      "position": [2750, 250]
     },
     {
       "parameters": {
@@ -191,7 +214,7 @@
       "name": "發送 Telegram 摘要",
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
-      "position": [3000, 150],
+      "position": [3000, -50],
       "credentials": {
         "telegramApi": {
           "id": "",
@@ -211,7 +234,7 @@
       "name": "發送 Email 報告",
       "type": "n8n-nodes-base.gmail",
       "typeVersion": 2.1,
-      "position": [3000, 450],
+      "position": [3000, 250],
       "credentials": {
         "gmailOAuth2": {
           "id": "",
@@ -228,10 +251,19 @@
       "main": [[{ "node": "準備批次請求", "type": "main", "index": 0 }]]
     },
     "準備批次請求": {
-      "main": [[{ "node": "批次估值分析", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "分批處理", "type": "main", "index": 0 }]]
+    },
+    "分批處理": {
+      "main": [
+        [{ "node": "合併結果與統計", "type": "main", "index": 0 }],
+        [{ "node": "批次估值分析", "type": "main", "index": 0 }]
+      ]
     },
     "批次估值分析": {
-      "main": [[{ "node": "合併結果與統計", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "等待 7 分鐘", "type": "main", "index": 0 }]]
+    },
+    "等待 7 分鐘": {
+      "main": [[{ "node": "分批處理", "type": "main", "index": 0 }]]
     },
     "合併結果與統計": {
       "main": [[{ "node": "準備 LLM Prompt", "type": "main", "index": 0 }]]
@@ -271,7 +303,7 @@
     "executionOrder": "v1",
     "timezone": "Asia/Taipei"
   },
-  "versionId": "1",
+  "versionId": "2",
   "meta": { "instanceId": "" },
   "tags": []
 }
